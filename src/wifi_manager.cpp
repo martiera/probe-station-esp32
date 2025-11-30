@@ -23,6 +23,8 @@ WiFiManager::WiFiManager() :
     _connectAttempts(0),
     _apActive(false),
     _scanResults(-1),
+    _scanComplete(false),
+    _scanInProgress(false),
     _stateCallback(nullptr) {
 }
 
@@ -247,13 +249,61 @@ void WiFiManager::reconnect() {
 }
 
 int16_t WiFiManager::scanNetworks() {
-    Serial.println(F("[WiFiManager] Scanning for networks..."));
+    // If scan is complete, return results
+    if (_scanComplete && !_scanInProgress) {
+        DEBUG_PRINTF("[WiFiManager] Returning cached scan results: %d networks\n", _scanResults);
+        return _scanResults;
+    }
     
-    _scanResults = WiFi.scanNetworks();
+    // If scan is in progress, check if complete
+    if (_scanInProgress) {
+        int16_t result = WiFi.scanComplete();
+        if (result >= 0) {
+            _scanResults = result;
+            _scanComplete = true;
+            _scanInProgress = false;
+            DEBUG_PRINTF("[WiFiManager] Scan complete: %d networks\n", _scanResults);
+            return _scanResults;
+        } else if (result == WIFI_SCAN_RUNNING) {
+            DEBUG_PRINTLN(F("[WiFiManager] Scan still in progress"));
+            return -1;  // Scan in progress
+        } else {
+            // Scan failed
+            _scanInProgress = false;
+            _scanComplete = false;
+            DEBUG_PRINTLN(F("[WiFiManager] Scan failed"));
+            return -2;
+        }
+    }
     
-    Serial.printf("[WiFiManager] Found %d networks\n", _scanResults);
+    // Start new async scan
+    if (startAsyncScan()) {
+        return -1;  // Scan started, in progress
+    }
     
-    return _scanResults;
+    return -2;  // Failed to start scan
+}
+
+bool WiFiManager::startAsyncScan() {
+    DEBUG_PRINTLN(F("[WiFiManager] Starting async WiFi scan..."));
+    
+    // Clear previous results
+    WiFi.scanDelete();
+    _scanComplete = false;
+    _scanResults = 0;
+    
+    // Start async scan (false = don't show hidden, true = async)
+    int16_t result = WiFi.scanNetworks(true, false);
+    
+    if (result == WIFI_SCAN_RUNNING) {
+        _scanInProgress = true;
+        DEBUG_PRINTLN(F("[WiFiManager] Async scan started"));
+        return true;
+    }
+    
+    DEBUG_PRINTF("[WiFiManager] Failed to start scan: %d\n", result);
+    _scanInProgress = false;
+    return false;
 }
 
 bool WiFiManager::getScannedNetwork(uint8_t index, String& ssid, int32_t& rssi, bool& encrypted) {

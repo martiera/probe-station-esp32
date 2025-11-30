@@ -1,17 +1,21 @@
 # ESP32 Temperature Monitoring System
 
-A professional-grade temperature monitoring solution for heating and hot water pipe monitoring using ESP32 and DS18B20 sensors.
+A professional-grade temperature monitoring solution for heating and hot water pipe monitoring using TTGO T-Display (ESP32 with TFT) and DS18B20 sensors.
 
 ## 🌟 Features
 
 ### Core Functionality
 - **Multi-sensor Support**: Connect 5-10 DS18B20 temperature sensors on a single bus
 - **Real-time Monitoring**: Live temperature updates via WebSocket
+- **TFT Display**: Built-in 1.14" color display showing temperatures, status, and alerts
 - **Web Dashboard**: Modern, responsive interface accessible from any device
+- **Pinned Sensor**: Pin your most important sensor for quick viewing on dashboard
+- **Min/Max Display**: Dashboard shows coldest and hottest sensors with names
 - **Temperature History**: Track temperature trends over time
 
 ### Connectivity
 - **WiFi Manager**: Auto-connect to configured network or create Access Point for setup
+- **Async WiFi Scanning**: Non-blocking network scanning prevents device reboots
 - **MQTT Integration**: Publish temperatures and alarms to any MQTT broker
 - **Home Assistant Auto-Discovery**: Sensors automatically appear in Home Assistant
 - **OTA Updates**: Update firmware wirelessly
@@ -23,7 +27,8 @@ A professional-grade temperature monitoring solution for heating and hot water p
 - **Web Notifications**: Real-time alerts in the dashboard
 
 ### Calibration
-- **Offset-based Calibration**: Calibrate all sensors to a known reference temperature
+- **Calibrate All**: Calibrate every connected sensor at once
+- **Calibrate New Only**: Only calibrate sensors with default names (newly added)
 - **Per-sensor Adjustment**: Fine-tune individual sensor readings
 - **Persistent Storage**: Calibration data saved to flash memory
 
@@ -37,16 +42,44 @@ A professional-grade temperature monitoring solution for heating and hot water p
 ### Components
 | Component | Quantity | Notes |
 |-----------|----------|-------|
-| ESP32-WROOM-32 | 1 | Any ESP32 dev board works |
+| TTGO T-Display | 1 | ESP32 with 1.14" ST7789 TFT |
 | DS18B20 Sensors | 5-10 | Waterproof probe recommended |
 | 4.7kΩ Resistor | 1 | Pull-up for OneWire bus |
 | Jumper Wires | As needed | |
+
+### TTGO T-Display Pinout
+```
+┌─────────────────────────────────────┐
+│          TTGO T-Display             │
+│  ┌─────────────────────────────┐    │
+│  │                             │    │
+│  │      1.14" TFT Display      │    │
+│  │        (240x135)            │    │
+│  │                             │    │
+│  └─────────────────────────────┘    │
+│                                     │
+│  [BTN1]                    [BTN2]   │
+│  GPIO35                    GPIO0    │
+└─────────────────────────────────────┘
+
+Available GPIOs:
+  - GPIO27: DS18B20 Data (recommended)
+  - GPIO26, GPIO25, GPIO33, GPIO32: Available
+  
+Reserved for Display:
+  - GPIO4:  Backlight
+  - GPIO5:  CS
+  - GPIO16: DC
+  - GPIO18: SCLK
+  - GPIO19: MOSI
+  - GPIO23: RST
+```
 
 ### Wiring Diagram
 
 ```
                     4.7kΩ
-ESP32 GPIO4 ────┬───/\/\/───── 3.3V
+TTGO GPIO27 ────┬───/\/\/───── 3.3V
                 │
                 ├──── DS18B20 #1 Data (Yellow)
                 ├──── DS18B20 #2 Data (Yellow)
@@ -90,11 +123,11 @@ GND ────────────┴──── All DS18B20 GND (Black)
 
 3. **Build and Upload Firmware**
    ```bash
-   # Build
-   pio run
+   # Build for TTGO T-Display
+   pio run -e ttgo-t-display
    
    # Upload to ESP32
-   pio run --target upload
+   pio run -e ttgo-t-display --target upload
    ```
 
 4. **Upload Web Interface**
@@ -266,20 +299,42 @@ probe-station-esp32/
 ├── platformio.ini          # PlatformIO configuration
 ├── README.md               # This file
 ├── src/
-│   ├── main.cpp           # Main application
-│   ├── config.h           # Hardware configuration
-│   ├── config_manager.h/cpp   # Settings persistence
-│   ├── sensor_manager.h/cpp   # DS18B20 handling
-│   ├── wifi_manager.h/cpp     # WiFi/AP management
-│   ├── mqtt_client.h/cpp      # MQTT publishing
-│   └── web_server.h/cpp       # HTTP server & API
+│   ├── main.cpp            # Main application
+│   ├── config.h            # Hardware configuration
+│   ├── config_manager.h/cpp    # Settings persistence
+│   ├── sensor_manager.h/cpp    # DS18B20 handling
+│   ├── wifi_manager.h/cpp      # WiFi/AP management
+│   ├── mqtt_client.h/cpp       # MQTT publishing
+│   ├── web_server.h/cpp        # HTTP server & API
+│   └── display_manager.h/cpp   # TFT display handling
 ├── data/
-│   ├── index.html         # Web dashboard
-│   ├── style.css          # Dashboard styling
-│   └── app.js             # Dashboard JavaScript
+│   ├── index.html          # Web dashboard
+│   ├── style.css           # Dashboard styling
+│   └── app.js              # Dashboard JavaScript
 └── docs/
-    └── images/            # Documentation images
+    └── images/             # Documentation images
 ```
+
+## 📺 Display Interface
+
+The TFT display shows 4 pages (use buttons to navigate):
+
+| Page | Content |
+|------|--------|
+| **Sensors** | Temperature readings with color-coded status |
+| **Status** | WiFi, MQTT connection, sensor count |
+| **Alerts** | Active alarms with sensor names |
+| **Info** | Device name, firmware, uptime, free memory |
+
+### Button Controls
+- **Button 1 (Top)**: Scroll through sensors / Navigate pages
+- **Button 2 (Bottom)**: Switch to next page
+
+### Temperature Colors
+- 🟢 **Green**: Normal range
+- 🟠 **Orange**: Near threshold (±5°C)
+- 🔴 **Red**: Above high threshold
+- 🔵 **Blue**: Below low threshold
 
 ## ⚠️ Troubleshooting
 
@@ -324,6 +379,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [ESPAsyncWebServer](https://github.com/me-no-dev/ESPAsyncWebServer)
 - [ArduinoJson](https://arduinojson.org/)
 - [PubSubClient](https://pubsubclient.knolleary.net/)
+- [TFT_eSPI](https://github.com/Bodmer/TFT_eSPI) - Display driver for TTGO T-Display
 
 ## 📞 Support
 

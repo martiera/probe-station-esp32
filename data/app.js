@@ -18,6 +18,7 @@ let websocket = null;
 let sensors = [];
 let systemStatus = null;
 let reconnectTimer = null;
+let pinnedSensorAddress = localStorage.getItem('pinnedSensor') || null;
 
 // ============================================================================
 // Initialization
@@ -276,9 +277,55 @@ function updateCalibrationList() {
 function updateSummary(summary) {
     if (!summary) return;
     
-    document.getElementById('avgTemp').textContent = formatTemp(summary.avg);
-    document.getElementById('minTemp').textContent = formatTemp(summary.min);
-    document.getElementById('maxTemp').textContent = formatTemp(summary.max);
+    // Find min and max sensors
+    let minSensor = null;
+    let maxSensor = null;
+    let pinnedSensor = null;
+    
+    for (const sensor of sensors) {
+        if (!sensor.connected || sensor.temperature === null) continue;
+        
+        if (minSensor === null || sensor.temperature < minSensor.temperature) {
+            minSensor = sensor;
+        }
+        if (maxSensor === null || sensor.temperature > maxSensor.temperature) {
+            maxSensor = sensor;
+        }
+        if (sensor.address === pinnedSensorAddress) {
+            pinnedSensor = sensor;
+        }
+    }
+    
+    // Update min display
+    if (minSensor) {
+        document.getElementById('minTemp').textContent = formatTemp(minSensor.temperature);
+        document.getElementById('minName').textContent = minSensor.name || 'Minimum';
+    } else {
+        document.getElementById('minTemp').textContent = '--';
+        document.getElementById('minName').textContent = 'Minimum';
+    }
+    
+    // Update max display
+    if (maxSensor) {
+        document.getElementById('maxTemp').textContent = formatTemp(maxSensor.temperature);
+        document.getElementById('maxName').textContent = maxSensor.name || 'Maximum';
+    } else {
+        document.getElementById('maxTemp').textContent = '--';
+        document.getElementById('maxName').textContent = 'Maximum';
+    }
+    
+    // Update pinned sensor display
+    if (pinnedSensor) {
+        document.getElementById('pinnedTemp').textContent = formatTemp(pinnedSensor.temperature);
+        document.getElementById('pinnedName').textContent = pinnedSensor.name || 'Pinned';
+        document.getElementById('pinnedCard').classList.remove('no-pin');
+    } else {
+        document.getElementById('pinnedTemp').textContent = '--';
+        document.getElementById('pinnedName').textContent = 'Click to pin';
+        document.getElementById('pinnedCard').classList.add('no-pin');
+    }
+    
+    // Update alarm count
     document.getElementById('alarmCount').textContent = summary.alarms;
     
     // Highlight alarm card if there are alarms
@@ -291,6 +338,65 @@ function getAlarmClass(sensor) {
     if (sensor.alarm === 'high') return 'alarm-high';
     if (sensor.alarm === 'low') return 'alarm-low';
     return '';
+}
+
+function selectPinnedSensor() {
+    if (sensors.length === 0) {
+        showToast('No sensors available', 'warning');
+        return;
+    }
+    
+    // Create a simple selection dialog
+    const options = sensors
+        .filter(s => s.connected)
+        .map(s => `<option value="${s.address}"${s.address === pinnedSensorAddress ? ' selected' : ''}>${s.name || 'Sensor'} (${formatTemp(s.temperature)})</option>`)
+        .join('');
+    
+    const dialog = document.createElement('div');
+    dialog.className = 'modal active';
+    dialog.innerHTML = `
+        <div class="modal-content">
+            <h3>Select Pinned Sensor</h3>
+            <div class="form-group">
+                <label>Sensor</label>
+                <select id="pinnedSensorSelect">
+                    <option value="">-- None --</option>
+                    ${options}
+                </select>
+            </div>
+            <div class="button-group">
+                <button class="btn btn-primary" onclick="savePinnedSensor()">Save</button>
+                <button class="btn btn-secondary" onclick="closePinDialog()">Cancel</button>
+            </div>
+        </div>
+    `;
+    dialog.id = 'pinDialog';
+    document.body.appendChild(dialog);
+}
+
+function savePinnedSensor() {
+    const select = document.getElementById('pinnedSensorSelect');
+    pinnedSensorAddress = select.value || null;
+    
+    if (pinnedSensorAddress) {
+        localStorage.setItem('pinnedSensor', pinnedSensorAddress);
+    } else {
+        localStorage.removeItem('pinnedSensor');
+    }
+    
+    closePinDialog();
+    
+    // Force summary update
+    if (sensors.length > 0) {
+        updateSummary({ alarms: document.getElementById('alarmCount').textContent });
+    }
+    
+    showToast('Pinned sensor updated', 'success');
+}
+
+function closePinDialog() {
+    const dialog = document.getElementById('pinDialog');
+    if (dialog) dialog.remove();
 }
 
 // ============================================================================
@@ -357,7 +463,23 @@ async function calibrateAll() {
     
     try {
         await apiPost('calibrate', { referenceTemp: refTemp });
-        showToast('Calibration complete', 'success');
+        showToast('All sensors calibrated', 'success');
+    } catch (error) {
+        showToast('Error during calibration', 'error');
+    }
+}
+
+async function calibrateNew() {
+    const refTemp = parseFloat(document.getElementById('refTemp').value);
+    
+    if (isNaN(refTemp)) {
+        showToast('Please enter a reference temperature', 'warning');
+        return;
+    }
+    
+    try {
+        const result = await apiPost('calibrate/new', { referenceTemp: refTemp });
+        showToast(result.message || 'New sensors calibrated', 'success');
     } catch (error) {
         showToast('Error during calibration', 'error');
     }
@@ -380,12 +502,32 @@ async function resetCalibration() {
 // WiFi Configuration
 // ============================================================================
 
-async function scanWifi() {
+async function scanWifi(retryCount = 0) {
     const select = document.getElementById('wifiSsid');
     select.innerHTML = '<option>Scanning...</option>';
     
     try {
-        const networks = await apiGet('wifi/scan');
+        const response = await fetch('/api/wifi/scan');
+        const data = await response.json();
+        
+        // Check if scan is still in progress
+        if (response.status === 202 || data.status === 'scanning') {
+            if (retryCount < 5) {
+                select.innerHTML = `<option>Scanning... (attempt ${retryCount + 1}/5)</option>`;
+                // Retry after 2 seconds
+                setTimeout(() => scanWifi(retryCount + 1), 2000);
+                return;
+            } else {
+                select.innerHTML = '<option>Scan timeout, try again</option>';
+                return;
+            }
+        }
+        
+        if (!response.ok) {
+            throw new Error(data.error || 'Scan failed');
+        }
+        
+        const networks = Array.isArray(data) ? data : [];
         
         // Sort by signal strength
         networks.sort((a, b) => b.rssi - a.rssi);
@@ -400,17 +542,22 @@ async function scanWifi() {
             }
         }
         
-        select.innerHTML = unique.map(net => `
-            <option value="${escapeHtml(net.ssid)}">
-                ${escapeHtml(net.ssid)} (${net.signal}%${net.encrypted ? ' 🔒' : ''})
-            </option>
-        `).join('');
+        if (unique.length === 0) {
+            select.innerHTML = '<option value="">No networks found</option>';
+        } else {
+            select.innerHTML = unique.map(net => `
+                <option value="${escapeHtml(net.ssid)}">
+                    ${escapeHtml(net.ssid)} (${net.signal}%${net.encrypted ? ' 🔒' : ''})
+                </option>
+            `).join('');
+        }
         
         // Add manual entry option
         select.innerHTML += '<option value="">-- Enter manually --</option>';
     } catch (error) {
+        console.error('WiFi scan error:', error);
         select.innerHTML = '<option>Error scanning</option>';
-        showToast('Error scanning WiFi networks', 'error');
+        showToast('Error scanning WiFi networks: ' + error.message, 'error');
     }
 }
 

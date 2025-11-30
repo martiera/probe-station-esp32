@@ -269,6 +269,45 @@ void SensorManager::calibrateAll(float referenceTemp) {
     configManager.save();
 }
 
+uint8_t SensorManager::calibrateUncalibrated(float referenceTemp) {
+    Serial.printf("[SensorManager] Calibrating uncalibrated sensors to %.2f°C\n", referenceTemp);
+    
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < _sensorCount; i++) {
+        if (isUncalibrated(i)) {
+            calibrateSensor(i, referenceTemp);
+            count++;
+        }
+    }
+    
+    if (count > 0) {
+        configManager.save();
+    }
+    
+    Serial.printf("[SensorManager] Calibrated %d uncalibrated sensors\n", count);
+    return count;
+}
+
+bool SensorManager::isUncalibrated(uint8_t index) const {
+    if (index >= _sensorCount) return false;
+    
+    const SensorConfig* config = configManager.getSensorConfigByAddress(
+        _sensorData[index].addressStr
+    );
+    
+    if (!config) return true;  // No config = uncalibrated
+    
+    // Check if using default name (starts with "Sensor " or is empty)
+    bool hasDefaultName = (strlen(config->name) == 0) ||
+                          (strncmp(config->name, "Sensor ", 7) == 0);
+    
+    // Check if calibration offset is zero (never calibrated)
+    bool hasZeroOffset = (config->calibrationOffset == 0.0f);
+    
+    // Consider uncalibrated if has default name AND zero offset
+    return hasDefaultName && hasZeroOffset;
+}
+
 void SensorManager::calibrateSensor(uint8_t index, float referenceTemp) {
     if (index >= _sensorCount || !_sensorData[index].connected) {
         return;

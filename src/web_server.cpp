@@ -204,6 +204,17 @@ void WebServer::setupRoutes() {
     );
     _server.addHandler(calibrateHandler);
     
+    // Calibrate only uncalibrated sensors
+    AsyncCallbackJsonWebHandler* calibrateNewHandler = new AsyncCallbackJsonWebHandler(
+        "/api/calibrate/new",
+        [this](AsyncWebServerRequest* request, JsonVariant& json) {
+            String jsonStr;
+            serializeJson(json, jsonStr);
+            handleCalibrateNew(request, (uint8_t*)jsonStr.c_str(), jsonStr.length());
+        }
+    );
+    _server.addHandler(calibrateNewHandler);
+    
     // ========== Actions ==========
     _server.on("/api/rescan", HTTP_POST, [this](AsyncWebServerRequest* request) {
         handleRescan(request);
@@ -538,17 +549,37 @@ void WebServer::handleUpdateSystemConfig(AsyncWebServerRequest* request,
 }
 
 void WebServer::handleWiFiScan(AsyncWebServerRequest* request) {
+    DEBUG_PRINTLN(F("[WebServer] WiFi scan requested"));
+    
     int16_t count = wifiManager.scanNetworks();
     
+    // Scan in progress
+    if (count == -1) {
+        DEBUG_PRINTLN(F("[WebServer] Scan in progress, returning status"));
+        request->send(202, "application/json", "{\"status\":\"scanning\",\"message\":\"WiFi scan in progress, please retry in 2-3 seconds\"}");
+        return;
+    }
+    
+    // Scan failed to start
+    if (count == -2) {
+        DEBUG_PRINTLN(F("[WebServer] Scan failed"));
+        sendError(request, 500, "WiFi scan failed to start");
+        return;
+    }
+    
+    // Return results
     JsonDocument doc;
     JsonArray networks = doc.to<JsonArray>();
     
-    for (int16_t i = 0; i < count; i++) {
+    for (int16_t i = 0; i < count && i < 20; i++) {  // Limit to 20 networks
         String ssid;
         int32_t rssi;
         bool encrypted;
         
         if (wifiManager.getScannedNetwork(i, ssid, rssi, encrypted)) {
+            // Skip empty SSIDs
+            if (ssid.length() == 0) continue;
+            
             JsonObject net = networks.add<JsonObject>();
             net["ssid"] = ssid;
             net["rssi"] = rssi;
@@ -563,9 +594,11 @@ void WebServer::handleWiFiScan(AsyncWebServerRequest* request) {
         }
     }
     
-    char buffer[1024];
-    serializeJson(doc, buffer, sizeof(buffer));
-    sendJson(request, 200, buffer);
+    DEBUG_PRINTF("[WebServer] Returning %d networks\n", networks.size());
+    
+    String response;
+    serializeJson(doc, response);
+    sendJson(request, 200, response.c_str());
 }
 
 void WebServer::handleCalibrate(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
@@ -581,6 +614,23 @@ void WebServer::handleCalibrate(AsyncWebServerRequest* request, uint8_t* data, s
     sensorManager.calibrateAll(refTemp);
     
     sendSuccess(request, "All sensors calibrated");
+}
+
+void WebServer::handleCalibrateNew(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, data, len);
+    
+    if (error || !doc["referenceTemp"].is<JsonVariant>()) {
+        sendError(request, 400, "Missing referenceTemp");
+        return;
+    }
+    
+    float refTemp = doc["referenceTemp"];
+    uint8_t count = sensorManager.calibrateUncalibrated(refTemp);
+    
+    char message[64];
+    snprintf(message, sizeof(message), "Calibrated %d new sensor(s)", count);
+    sendSuccess(request, message);
 }
 
 void WebServer::handleCalibrateSensor(AsyncWebServerRequest* request, uint8_t sensorIndex,

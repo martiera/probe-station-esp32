@@ -12,8 +12,8 @@
  * - OTA firmware updates
  * 
  * Hardware:
- * - ESP32-WROOM-32
- * - DS18B20 temperature sensors (1-10) on GPIO4
+ * - TTGO T-Display (ESP32 with ST7789 TFT)
+ * - DS18B20 temperature sensors (1-10) on GPIO27
  * - 4.7kΩ pull-up resistor on data line
  * 
  * Author: Temperature Monitor Project
@@ -29,6 +29,7 @@
 #include "wifi_manager.h"
 #include "mqtt_client.h"
 #include "web_server.h"
+#include "display_manager.h"
 
 // ============================================================================
 // Global State
@@ -37,6 +38,11 @@
 static uint32_t lastStatusPrint = 0;
 static uint32_t lastLedToggle = 0;
 static bool ledState = false;
+
+#ifdef USE_DISPLAY
+static uint32_t lastButton1State = HIGH;
+static uint32_t lastButton2State = HIGH;
+#endif
 
 // ============================================================================
 // Forward Declarations
@@ -271,6 +277,16 @@ void setup() {
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
     
+#ifdef USE_DISPLAY
+    // Initialize buttons
+    pinMode(BUTTON_1_PIN, INPUT_PULLUP);
+    pinMode(BUTTON_2_PIN, INPUT_PULLUP);
+    
+    // Initialize display
+    Serial.println(F("[MAIN] Initializing display..."));
+    displayManager.begin();
+#endif
+    
     // Initialize configuration manager (loads from SPIFFS)
     Serial.println(F("[MAIN] Initializing configuration..."));
     if (!configManager.begin()) {
@@ -294,6 +310,13 @@ void setup() {
     // Initialize web server (works in both AP and STA mode)
     Serial.println(F("[MAIN] Initializing web server..."));
     webServer.begin();
+    
+#ifdef USE_DISPLAY
+    // Set display manager references
+    displayManager.setSensorManager(&sensorManager);
+    displayManager.setWiFiManager(&wifiManager);
+    displayManager.setMQTTClient(&mqttClient);
+#endif
     
     // Print initial status
     Serial.println(F("\n[MAIN] Initialization complete!"));
@@ -344,6 +367,25 @@ void loop() {
     
     // Update status LED
     updateStatusLed();
+    
+#ifdef USE_DISPLAY
+    // Handle button presses
+    bool button1 = digitalRead(BUTTON_1_PIN);
+    bool button2 = digitalRead(BUTTON_2_PIN);
+    
+    if (button1 == LOW && lastButton1State == HIGH) {
+        displayManager.handleButton1();
+    }
+    if (button2 == LOW && lastButton2State == HIGH) {
+        displayManager.handleButton2();
+    }
+    
+    lastButton1State = button1;
+    lastButton2State = button2;
+    
+    // Update display
+    displayManager.update();
+#endif
     
     // Print debug status
     printStatus();

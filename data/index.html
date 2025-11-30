@@ -42,25 +42,25 @@
         <section class="tab-content active" id="tab-dashboard">
             <!-- Summary Cards -->
             <div class="summary-cards">
-                <div class="summary-card">
-                    <div class="card-icon">📊</div>
+                <div class="summary-card pinned-card" id="pinnedCard" onclick="selectPinnedSensor()">
+                    <div class="card-icon">📌</div>
                     <div class="card-content">
-                        <div class="card-value" id="avgTemp">--</div>
-                        <div class="card-label">Average</div>
+                        <div class="card-value" id="pinnedTemp">--</div>
+                        <div class="card-label" id="pinnedName">Pinned Sensor</div>
                     </div>
                 </div>
                 <div class="summary-card">
-                    <div class="card-icon">🔽</div>
+                    <div class="card-icon">❄️</div>
                     <div class="card-content">
                         <div class="card-value" id="minTemp">--</div>
-                        <div class="card-label">Minimum</div>
+                        <div class="card-label" id="minName">Minimum</div>
                     </div>
                 </div>
                 <div class="summary-card">
-                    <div class="card-icon">🔼</div>
+                    <div class="card-icon">🔥</div>
                     <div class="card-content">
                         <div class="card-value" id="maxTemp">--</div>
-                        <div class="card-label">Maximum</div>
+                        <div class="card-label" id="maxName">Maximum</div>
                     </div>
                 </div>
                 <div class="summary-card" id="alarmCard">
@@ -143,8 +143,13 @@
                     </div>
                     <div class="button-group">
                         <button class="btn btn-primary" onclick="calibrateAll()">Calibrate All Sensors</button>
+                        <button class="btn btn-success" onclick="calibrateNew()">Calibrate New Only</button>
                         <button class="btn btn-secondary" onclick="resetCalibration()">Reset Calibration</button>
                     </div>
+                    <p class="help-text" style="margin-top: 10px; font-size: 0.85em; color: #666;">
+                        <strong>Calibrate All:</strong> Calibrates every connected sensor.<br>
+                        <strong>Calibrate New Only:</strong> Only calibrates sensors with default names and no previous calibration.
+                    </p>
                 </div>
 
                 <div class="calibration-status">

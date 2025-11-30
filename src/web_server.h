@@ -136,6 +136,11 @@ private:
     void handleCalibrate(AsyncWebServerRequest* request, uint8_t* data, size_t len);
     
     /**
+     * POST /api/calibrate/new - Calibrate only new/uncalibrated sensors
+     */
+    void handleCalibrateNew(AsyncWebServerRequest* request, uint8_t* data, size_t len);
+    
+    /**
      * POST /api/calibrate/{id} - Calibrate single sensor
      */
     void handleCalibrateSensor(AsyncWebServerRequest* request, uint8_t sensorIndex,

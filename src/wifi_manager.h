@@ -147,10 +147,27 @@ public:
     void reconnect();
     
     /**
-     * Scan for available networks
-     * @return Number of networks found
+     * Scan for available networks (async)
+     * @return Number of networks found, or -1 if scan in progress, -2 if starting scan
      */
     int16_t scanNetworks();
+    
+    /**
+     * Start async WiFi scan
+     * @return true if scan started
+     */
+    bool startAsyncScan();
+    
+    /**
+     * Check if scan is complete
+     * @return true if scan results are ready
+     */
+    bool isScanComplete() const { return _scanComplete; }
+    
+    /**
+     * Get scan results count
+     */
+    int16_t getScanResultCount() const { return _scanResults; }
     
     /**
      * Get scanned network info
@@ -185,6 +202,8 @@ private:
     uint8_t _connectAttempts;
     bool _apActive;
     int16_t _scanResults;
+    bool _scanComplete;
+    bool _scanInProgress;
     
     WiFiStateCallback _stateCallback;
     

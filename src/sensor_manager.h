@@ -165,6 +165,20 @@ public:
     void calibrateAll(float referenceTemp);
     
     /**
+     * Calibrate only uncalibrated sensors (default name or zero offset)
+     * @param referenceTemp The known temperature the sensors should read
+     * @return Number of sensors calibrated
+     */
+    uint8_t calibrateUncalibrated(float referenceTemp);
+    
+    /**
+     * Check if a sensor is considered "uncalibrated"
+     * @param index Sensor index
+     * @return true if sensor has default name and zero calibration offset
+     */
+    bool isUncalibrated(uint8_t index) const;
+    
+    /**
      * Calibrate a single sensor
      * @param index Sensor index
      * @param referenceTemp The known temperature the sensor should read

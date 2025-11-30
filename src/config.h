@@ -36,10 +36,15 @@
 // ============================================================================
 
 // DS18B20 OneWire bus pin
-constexpr uint8_t ONEWIRE_PIN = 4;  // GPIO4 - Connect all DS18B20 data pins here
+// Note: GPIO4 is used for TFT backlight on TTGO T-Display, use GPIO27 instead
+constexpr uint8_t ONEWIRE_PIN = 27;  // GPIO27 - Connect all DS18B20 data pins here
 
-// Status LED pin (built-in LED on most ESP32 boards)
+// Status LED pin (not available on TTGO T-Display, display used instead)
 constexpr uint8_t LED_PIN = 2;
+
+// TTGO T-Display button pins
+constexpr uint8_t BUTTON_1_PIN = 35;  // Top button
+constexpr uint8_t BUTTON_2_PIN = 0;   // Bottom button
 
 // ============================================================================
 // Sensor Configuration
