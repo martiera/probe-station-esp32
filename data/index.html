@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Temperature Monitor</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌡️</text></svg>">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <h1>🌡️ Temperature Monitor</h1>
+                <span class="device-name" id="deviceName">Loading...</span>
+            </div>
+            <div class="header-right">
+                <div class="status-indicators">
+                    <span class="status-badge" id="wifiStatus">
+                        <span class="status-dot"></span>
+                        <span class="status-text">WiFi</span>
+                    </span>
+                    <span class="status-badge" id="mqttStatus">
+                        <span class="status-dot"></span>
+                        <span class="status-text">MQTT</span>
+                    </span>
+                </div>
+                <button class="btn btn-icon" onclick="openSettings()" title="Settings">⚙️</button>
+            </div>
+        </header>
+
+        <!-- Navigation Tabs -->
+        <nav class="tabs">
+            <button class="tab active" data-tab="dashboard">Dashboard</button>
+            <button class="tab" data-tab="sensors">Sensors</button>
+            <button class="tab" data-tab="calibration">Calibration</button>
+            <button class="tab" data-tab="settings">Settings</button>
+        </nav>
+
+        <!-- Dashboard Tab -->
+        <section class="tab-content active" id="tab-dashboard">
+            <!-- Summary Cards -->
+            <div class="summary-cards">
+                <div class="summary-card">
+                    <div class="card-icon">📊</div>
+                    <div class="card-content">
+                        <div class="card-value" id="avgTemp">--</div>
+                        <div class="card-label">Average</div>
+                    </div>
+                </div>
+                <div class="summary-card">
+                    <div class="card-icon">🔽</div>
+                    <div class="card-content">
+                        <div class="card-value" id="minTemp">--</div>
+                        <div class="card-label">Minimum</div>
+                    </div>
+                </div>
+                <div class="summary-card">
+                    <div class="card-icon">🔼</div>
+                    <div class="card-content">
+                        <div class="card-value" id="maxTemp">--</div>
+                        <div class="card-label">Maximum</div>
+                    </div>
+                </div>
+                <div class="summary-card" id="alarmCard">
+                    <div class="card-icon">🔔</div>
+                    <div class="card-content">
+                        <div class="card-value" id="alarmCount">0</div>
+                        <div class="card-label">Alarms</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sensor Grid -->
+            <div class="section">
+                <h2>Sensors</h2>
+                <div class="sensor-grid" id="sensorGrid">
+                    <!-- Sensors will be populated by JavaScript -->
+                    <div class="loading">Loading sensors...</div>
+                </div>
+            </div>
+
+            <!-- System Info -->
+            <div class="section">
+                <h2>System Information</h2>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <span class="info-label">Uptime</span>
+                        <span class="info-value" id="uptime">--</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">IP Address</span>
+                        <span class="info-value" id="ipAddress">--</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">WiFi Signal</span>
+                        <span class="info-value" id="wifiSignal">--</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Free Memory</span>
+                        <span class="info-value" id="freeHeap">--</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Firmware</span>
+                        <span class="info-value" id="firmware">--</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Sensor Count</span>
+                        <span class="info-value" id="sensorCount">--</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Sensors Tab -->
+        <section class="tab-content" id="tab-sensors">
+            <div class="section">
+                <div class="section-header">
+                    <h2>Sensor Configuration</h2>
+                    <button class="btn btn-secondary" onclick="rescanSensors()">🔄 Rescan</button>
+                </div>
+                <div class="sensor-list" id="sensorList">
+                    <!-- Will be populated by JavaScript -->
+                </div>
+            </div>
+        </section>
+
+        <!-- Calibration Tab -->
+        <section class="tab-content" id="tab-calibration">
+            <div class="section">
+                <h2>Sensor Calibration</h2>
+                <p class="section-description">
+                    To calibrate sensors, place all sensors in a known temperature environment 
+                    (e.g., ice water bath at 0°C or room temperature with a reference thermometer).
+                    Enter the reference temperature and click calibrate.
+                </p>
+                
+                <div class="calibration-form">
+                    <div class="form-group">
+                        <label for="refTemp">Reference Temperature (°C)</label>
+                        <input type="number" id="refTemp" step="0.1" placeholder="Enter reference temperature">
+                    </div>
+                    <div class="button-group">
+                        <button class="btn btn-primary" onclick="calibrateAll()">Calibrate All Sensors</button>
+                        <button class="btn btn-secondary" onclick="resetCalibration()">Reset Calibration</button>
+                    </div>
+                </div>
+
+                <div class="calibration-status">
+                    <h3>Current Calibration Offsets</h3>
+                    <div class="offset-list" id="offsetList">
+                        <!-- Will be populated by JavaScript -->
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Settings Tab -->
+        <section class="tab-content" id="tab-settings">
+            <!-- WiFi Settings -->
+            <div class="section">
+                <h2>WiFi Configuration</h2>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="wifiSsid">WiFi Network</label>
+                        <div class="input-with-button">
+                            <select id="wifiSsid"></select>
+                            <button class="btn btn-icon" onclick="scanWifi()" title="Scan">🔄</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="wifiPassword">Password</label>
+                        <input type="password" id="wifiPassword" placeholder="Enter WiFi password">
+                    </div>
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="wifiDhcp" checked onchange="toggleStaticIP()">
+                            Use DHCP
+                        </label>
+                    </div>
+                    <div class="static-ip-fields" id="staticIpFields" style="display: none;">
+                        <div class="form-group">
+                            <label for="staticIp">Static IP</label>
+                            <input type="text" id="staticIp" placeholder="192.168.1.100">
+                        </div>
+                        <div class="form-group">
+                            <label for="gateway">Gateway</label>
+                            <input type="text" id="gateway" placeholder="192.168.1.1">
+                        </div>
+                        <div class="form-group">
+                            <label for="subnet">Subnet</label>
+                            <input type="text" id="subnet" placeholder="255.255.255.0">
+                        </div>
+                        <div class="form-group">
+                            <label for="dns">DNS</label>
+                            <input type="text" id="dns" placeholder="8.8.8.8">
+                        </div>
+                    </div>
+                </div>
+                <button class="btn btn-primary" onclick="saveWifiConfig()">Save WiFi Settings</button>
+            </div>
+
+            <!-- MQTT Settings -->
+            <div class="section">
+                <h2>MQTT Configuration</h2>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="mqttEnabled">
+                            Enable MQTT
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label for="mqttServer">Server</label>
+                        <input type="text" id="mqttServer" placeholder="mqtt.example.com">
+                    </div>
+                    <div class="form-group">
+                        <label for="mqttPort">Port</label>
+                        <input type="number" id="mqttPort" value="1883">
+                    </div>
+                    <div class="form-group">
+                        <label for="mqttUser">Username</label>
+                        <input type="text" id="mqttUser" placeholder="Username (optional)">
+                    </div>
+                    <div class="form-group">
+                        <label for="mqttPassword">Password</label>
+                        <input type="password" id="mqttPassword" placeholder="Password (optional)">
+                    </div>
+                    <div class="form-group">
+                        <label for="mqttTopic">Topic Prefix</label>
+                        <input type="text" id="mqttTopic" value="tempmonitor">
+                    </div>
+                    <div class="form-group">
+                        <label for="mqttInterval">Publish Interval (seconds)</label>
+                        <input type="number" id="mqttInterval" value="10" min="1" max="3600">
+                    </div>
+                </div>
+                <button class="btn btn-primary" onclick="saveMqttConfig()">Save MQTT Settings</button>
+            </div>
+
+            <!-- System Settings -->
+            <div class="section">
+                <h2>System Configuration</h2>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="deviceNameInput">Device Name</label>
+                        <input type="text" id="deviceNameInput" placeholder="TempMonitor">
+                    </div>
+                    <div class="form-group">
+                        <label for="readInterval">Read Interval (seconds)</label>
+                        <input type="number" id="readInterval" value="2" min="1" max="60">
+                    </div>
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="celsiusUnits" checked>
+                            Use Celsius (uncheck for Fahrenheit)
+                        </label>
+                    </div>
+                </div>
+                <button class="btn btn-primary" onclick="saveSystemConfig()">Save System Settings</button>
+            </div>
+
+            <!-- Actions -->
+            <div class="section">
+                <h2>Device Actions</h2>
+                <div class="button-group">
+                    <button class="btn btn-secondary" onclick="rebootDevice()">🔄 Reboot Device</button>
+                    <button class="btn btn-danger" onclick="factoryReset()">⚠️ Factory Reset</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Notification Toast -->
+        <div class="toast-container" id="toastContainer"></div>
+    </div>
+
+    <!-- Sensor Edit Modal -->
+    <div class="modal" id="sensorModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Edit Sensor</h3>
+                <button class="btn btn-icon" onclick="closeModal()">✕</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editSensorIndex">
+                <div class="form-group">
+                    <label for="editSensorName">Sensor Name</label>
+                    <input type="text" id="editSensorName" placeholder="Enter sensor name">
+                </div>
+                <div class="form-group">
+                    <label for="editThresholdLow">Low Threshold (°C)</label>
+                    <input type="number" id="editThresholdLow" step="0.1">
+                </div>
+                <div class="form-group">
+                    <label for="editThresholdHigh">High Threshold (°C)</label>
+                    <input type="number" id="editThresholdHigh" step="0.1">
+                </div>
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="editAlertEnabled">
+                        Enable Alerts
+                    </label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveSensor()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

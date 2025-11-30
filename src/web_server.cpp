@@ -1,0 +1,750 @@
+/*
+ * ESP32 Temperature Monitoring System
+ * Web Server Implementation
+ */
+
+#include <AsyncJson.h>
+#include "web_server.h"
+#include <ArduinoJson.h>
+#include <SPIFFS.h>
+#include "wifi_manager.h"
+#include "mqtt_client.h"
+
+// Global instance
+WebServer webServer;
+
+// WebSocket update interval (ms)
+constexpr uint32_t WS_UPDATE_INTERVAL = 2000;
+
+// ============================================================================
+// Constructor
+// ============================================================================
+
+WebServer::WebServer() :
+    _server(WEB_SERVER_PORT),
+    _ws("/ws"),
+    _lastWsUpdate(0) {
+}
+
+// ============================================================================
+// Public Methods
+// ============================================================================
+
+void WebServer::begin() {
+    Serial.println(F("[WebServer] Initializing..."));
+    
+    // Setup WebSocket
+    _ws.onEvent([this](AsyncWebSocket* server, AsyncWebSocketClient* client,
+                       AwsEventType type, void* arg, uint8_t* data, size_t len) {
+        onWsEvent(server, client, type, arg, data, len);
+    });
+    _server.addHandler(&_ws);
+    
+    // Setup routes
+    setupRoutes();
+    setupStaticFiles();
+    
+    // Start server
+    _server.begin();
+    
+    Serial.println(F("[WebServer] Started"));
+}
+
+void WebServer::update() {
+    // Clean up disconnected WebSocket clients
+    _ws.cleanupClients();
+    
+    // Send periodic WebSocket updates
+    uint32_t now = millis();
+    if (now - _lastWsUpdate >= WS_UPDATE_INTERVAL && _ws.count() > 0) {
+        sendSensorUpdate();
+        _lastWsUpdate = now;
+    }
+}
+
+void WebServer::sendSensorUpdate() {
+    if (_ws.count() == 0) {
+        return;
+    }
+    
+    JsonDocument doc;
+    doc["type"] = "sensors";
+    
+    JsonArray sensors = doc["data"].to<JsonArray>();
+    
+    for (uint8_t i = 0; i < sensorManager.getSensorCount(); i++) {
+        JsonObject obj = sensors.add<JsonObject>();
+        buildSensorJson(obj, i);
+    }
+    
+    // Add summary
+    JsonObject summary = doc["summary"].to<JsonObject>();
+    summary["avg"] = sensorManager.getAverageTemperature();
+    summary["min"] = sensorManager.getMinTemperature();
+    summary["max"] = sensorManager.getMaxTemperature();
+    summary["alarms"] = sensorManager.getAlarmCount();
+    
+    char buffer[1024];
+    serializeJson(doc, buffer, sizeof(buffer));
+    
+    _ws.textAll(buffer);
+}
+
+void WebServer::sendNotification(const char* type, const char* message) {
+    if (_ws.count() == 0) {
+        return;
+    }
+    
+    JsonDocument doc;
+    doc["type"] = "notification";
+    doc["level"] = type;
+    doc["message"] = message;
+    doc["timestamp"] = millis() / 1000;
+    
+    char buffer[256];
+    serializeJson(doc, buffer, sizeof(buffer));
+    
+    _ws.textAll(buffer);
+}
+
+// ============================================================================
+// Route Setup
+// ============================================================================
+
+void WebServer::setupRoutes() {
+    // ========== Status ==========
+    _server.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        handleGetStatus(request);
+    });
+    
+    // ========== Sensors ==========
+    _server.on("/api/sensors", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        handleGetSensors(request);
+    });
+    
+    // Sensor by index
+    _server.on("^\\/api\\/sensors\\/(\\d+)$", HTTP_GET, 
+        [this](AsyncWebServerRequest* request) {
+            uint8_t idx = request->pathArg(0).toInt();
+            handleGetSensor(request, idx);
+        });
+    
+    // Update sensor config
+    AsyncCallbackJsonWebHandler* sensorUpdateHandler = new AsyncCallbackJsonWebHandler(
+        "/api/sensors/update",
+        [this](AsyncWebServerRequest* request, JsonVariant& json) {
+            uint8_t idx = json["index"] | 255;
+            if (idx < sensorManager.getSensorCount()) {
+                String jsonStr;
+                serializeJson(json, jsonStr);
+                handleUpdateSensor(request, idx, (uint8_t*)jsonStr.c_str(), jsonStr.length());
+            } else {
+                sendError(request, 400, "Invalid sensor index");
+            }
+        }
+    );
+    _server.addHandler(sensorUpdateHandler);
+    
+    // ========== Configuration ==========
+    _server.on("/api/config/wifi", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        handleGetWiFiConfig(request);
+    });
+    
+    AsyncCallbackJsonWebHandler* wifiConfigHandler = new AsyncCallbackJsonWebHandler(
+        "/api/config/wifi",
+        [this](AsyncWebServerRequest* request, JsonVariant& json) {
+            String jsonStr;
+            serializeJson(json, jsonStr);
+            handleUpdateWiFiConfig(request, (uint8_t*)jsonStr.c_str(), jsonStr.length());
+        }
+    );
+    _server.addHandler(wifiConfigHandler);
+    
+    _server.on("/api/config/mqtt", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        handleGetMQTTConfig(request);
+    });
+    
+    AsyncCallbackJsonWebHandler* mqttConfigHandler = new AsyncCallbackJsonWebHandler(
+        "/api/config/mqtt",
+        [this](AsyncWebServerRequest* request, JsonVariant& json) {
+            String jsonStr;
+            serializeJson(json, jsonStr);
+            handleUpdateMQTTConfig(request, (uint8_t*)jsonStr.c_str(), jsonStr.length());
+        }
+    );
+    _server.addHandler(mqttConfigHandler);
+    
+    _server.on("/api/config/system", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        handleGetSystemConfig(request);
+    });
+    
+    AsyncCallbackJsonWebHandler* sysConfigHandler = new AsyncCallbackJsonWebHandler(
+        "/api/config/system",
+        [this](AsyncWebServerRequest* request, JsonVariant& json) {
+            String jsonStr;
+            serializeJson(json, jsonStr);
+            handleUpdateSystemConfig(request, (uint8_t*)jsonStr.c_str(), jsonStr.length());
+        }
+    );
+    _server.addHandler(sysConfigHandler);
+    
+    // ========== WiFi Scan ==========
+    _server.on("/api/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        handleWiFiScan(request);
+    });
+    
+    // ========== Calibration ==========
+    AsyncCallbackJsonWebHandler* calibrateHandler = new AsyncCallbackJsonWebHandler(
+        "/api/calibrate",
+        [this](AsyncWebServerRequest* request, JsonVariant& json) {
+            String jsonStr;
+            serializeJson(json, jsonStr);
+            handleCalibrate(request, (uint8_t*)jsonStr.c_str(), jsonStr.length());
+        }
+    );
+    _server.addHandler(calibrateHandler);
+    
+    // ========== Actions ==========
+    _server.on("/api/rescan", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        handleRescan(request);
+    });
+    
+    _server.on("/api/reboot", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        handleReboot(request);
+    });
+    
+    _server.on("/api/reset", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        handleFactoryReset(request);
+    });
+    
+    // ========== History ==========
+    _server.on("^\\/api\\/history\\/(\\d+)$", HTTP_GET,
+        [this](AsyncWebServerRequest* request) {
+            uint8_t idx = request->pathArg(0).toInt();
+            handleGetHistory(request, idx);
+        });
+    
+    // ========== CORS Headers ==========
+    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
+    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
+    
+    // Handle OPTIONS requests for CORS
+    _server.onNotFound([](AsyncWebServerRequest* request) {
+        if (request->method() == HTTP_OPTIONS) {
+            request->send(200);
+        } else {
+            request->send(404, "text/plain", "Not found");
+        }
+    });
+}
+
+void WebServer::setupStaticFiles() {
+    // Serve static files from SPIFFS
+    _server.serveStatic("/", SPIFFS, "/").setDefaultFile("index.html");
+}
+
+// ============================================================================
+// API Handlers
+// ============================================================================
+
+void WebServer::handleGetStatus(AsyncWebServerRequest* request) {
+    JsonDocument doc;
+    
+    // Device info
+    doc["device"]["name"] = configManager.getSystemConfig().deviceName;
+    doc["device"]["firmware"] = FIRMWARE_VERSION;
+    doc["device"]["uptime"] = millis() / 1000;
+    doc["device"]["freeHeap"] = ESP.getFreeHeap();
+    doc["device"]["chipModel"] = ESP.getChipModel();
+    
+    // WiFi status
+    doc["wifi"]["status"] = WiFiManager::stateToString(wifiManager.getState());
+    doc["wifi"]["ssid"] = wifiManager.getSSID();
+    doc["wifi"]["ip"] = wifiManager.getIP().toString();
+    doc["wifi"]["rssi"] = wifiManager.getRSSI();
+    doc["wifi"]["signal"] = wifiManager.getSignalStrength();
+    doc["wifi"]["mac"] = wifiManager.getMACAddress();
+    
+    if (wifiManager.isAPMode()) {
+        doc["wifi"]["apIP"] = wifiManager.getAPIP().toString();
+        doc["wifi"]["apClients"] = wifiManager.getAPClientCount();
+    }
+    
+    // MQTT status
+    doc["mqtt"]["enabled"] = mqttClient.isEnabled();
+    doc["mqtt"]["connected"] = mqttClient.isConnected();
+    doc["mqtt"]["publishCount"] = mqttClient.getPublishCount();
+    
+    // Sensor summary
+    doc["sensors"]["count"] = sensorManager.getSensorCount();
+    doc["sensors"]["alarms"] = sensorManager.getAlarmCount();
+    doc["sensors"]["avgTemp"] = sensorManager.getAverageTemperature();
+    doc["sensors"]["minTemp"] = sensorManager.getMinTemperature();
+    doc["sensors"]["maxTemp"] = sensorManager.getMaxTemperature();
+    
+    char buffer[512];
+    serializeJson(doc, buffer, sizeof(buffer));
+    sendJson(request, 200, buffer);
+}
+
+void WebServer::handleGetSensors(AsyncWebServerRequest* request) {
+    JsonDocument doc;
+    JsonArray sensors = doc.to<JsonArray>();
+    
+    for (uint8_t i = 0; i < sensorManager.getSensorCount(); i++) {
+        JsonObject obj = sensors.add<JsonObject>();
+        buildSensorJson(obj, i);
+    }
+    
+    char buffer[1024];
+    serializeJson(doc, buffer, sizeof(buffer));
+    sendJson(request, 200, buffer);
+}
+
+void WebServer::handleGetSensor(AsyncWebServerRequest* request, uint8_t sensorIndex) {
+    if (sensorIndex >= sensorManager.getSensorCount()) {
+        sendError(request, 404, "Sensor not found");
+        return;
+    }
+    
+    JsonDocument doc;
+    JsonObject obj = doc.to<JsonObject>();
+    buildSensorJson(obj, sensorIndex);
+    
+    char buffer[512];
+    serializeJson(doc, buffer, sizeof(buffer));
+    sendJson(request, 200, buffer);
+}
+
+void WebServer::handleUpdateSensor(AsyncWebServerRequest* request, uint8_t sensorIndex,
+                                    uint8_t* data, size_t len) {
+    if (sensorIndex >= sensorManager.getSensorCount()) {
+        sendError(request, 404, "Sensor not found");
+        return;
+    }
+    
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, data, len);
+    
+    if (error) {
+        sendError(request, 400, "Invalid JSON");
+        return;
+    }
+    
+    const SensorData* sensorData = sensorManager.getSensorData(sensorIndex);
+    SensorConfig* config = configManager.getSensorConfigByAddress(sensorData->addressStr);
+    
+    if (!config) {
+        sendError(request, 500, "Sensor config not found");
+        return;
+    }
+    
+    // Update fields
+    if (doc["name"].is<JsonVariant>()) {
+        strncpy(config->name, doc["name"] | "", SENSOR_NAME_MAX_LEN - 1);
+    }
+    if (doc["thresholdLow"].is<JsonVariant>()) {
+        config->thresholdLow = doc["thresholdLow"];
+    }
+    if (doc["thresholdHigh"].is<JsonVariant>()) {
+        config->thresholdHigh = doc["thresholdHigh"];
+    }
+    if (doc["alertEnabled"].is<JsonVariant>()) {
+        config->alertEnabled = doc["alertEnabled"];
+    }
+    if (doc["calibrationOffset"].is<JsonVariant>()) {
+        config->calibrationOffset = doc["calibrationOffset"];
+    }
+    
+    configManager.markDirty();
+    configManager.save();
+    
+    sendSuccess(request, "Sensor updated");
+}
+
+void WebServer::handleGetWiFiConfig(AsyncWebServerRequest* request) {
+    const WiFiConfig& config = configManager.getWiFiConfig();
+    
+    JsonDocument doc;
+    doc["ssid"] = config.ssid;
+    doc["password"] = ""; // Don't expose password
+    doc["dhcp"] = config.dhcp;
+    doc["staticIP"] = config.staticIP;
+    doc["gateway"] = config.gateway;
+    doc["subnet"] = config.subnet;
+    doc["dns"] = config.dns;
+    
+    char buffer[256];
+    serializeJson(doc, buffer, sizeof(buffer));
+    sendJson(request, 200, buffer);
+}
+
+void WebServer::handleUpdateWiFiConfig(AsyncWebServerRequest* request,
+                                        uint8_t* data, size_t len) {
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, data, len);
+    
+    if (error) {
+        sendError(request, 400, "Invalid JSON");
+        return;
+    }
+    
+    WiFiConfig& config = configManager.getWiFiConfig();
+    
+    if (doc["ssid"].is<JsonVariant>()) {
+        strncpy(config.ssid, doc["ssid"] | "", 32);
+    }
+    if (doc["password"].is<JsonVariant>() && strlen(doc["password"] | "") > 0) {
+        strncpy(config.password, doc["password"] | "", 64);
+    }
+    if (doc["dhcp"].is<JsonVariant>()) {
+        config.dhcp = doc["dhcp"];
+    }
+    if (doc["staticIP"].is<JsonVariant>()) {
+        strncpy(config.staticIP, doc["staticIP"] | "", 15);
+    }
+    if (doc["gateway"].is<JsonVariant>()) {
+        strncpy(config.gateway, doc["gateway"] | "", 15);
+    }
+    if (doc["subnet"].is<JsonVariant>()) {
+        strncpy(config.subnet, doc["subnet"] | "", 15);
+    }
+    if (doc["dns"].is<JsonVariant>()) {
+        strncpy(config.dns, doc["dns"] | "", 15);
+    }
+    
+    configManager.save();
+    
+    // Trigger WiFi reconnection
+    wifiManager.reconnect();
+    
+    sendSuccess(request, "WiFi configuration updated. Reconnecting...");
+}
+
+void WebServer::handleGetMQTTConfig(AsyncWebServerRequest* request) {
+    const MQTTConfig& config = configManager.getMQTTConfig();
+    
+    JsonDocument doc;
+    doc["server"] = config.server;
+    doc["port"] = config.port;
+    doc["username"] = config.username;
+    doc["password"] = ""; // Don't expose password
+    doc["topicPrefix"] = config.topicPrefix;
+    doc["enabled"] = config.enabled;
+    doc["publishOnChange"] = config.publishOnChange;
+    doc["publishThreshold"] = config.publishThreshold;
+    doc["publishInterval"] = config.publishInterval;
+    
+    char buffer[256];
+    serializeJson(doc, buffer, sizeof(buffer));
+    sendJson(request, 200, buffer);
+}
+
+void WebServer::handleUpdateMQTTConfig(AsyncWebServerRequest* request,
+                                        uint8_t* data, size_t len) {
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, data, len);
+    
+    if (error) {
+        sendError(request, 400, "Invalid JSON");
+        return;
+    }
+    
+    MQTTConfig& config = configManager.getMQTTConfig();
+    
+    if (doc["server"].is<JsonVariant>()) {
+        strncpy(config.server, doc["server"] | "", 64);
+    }
+    if (doc["port"].is<JsonVariant>()) {
+        config.port = doc["port"];
+    }
+    if (doc["username"].is<JsonVariant>()) {
+        strncpy(config.username, doc["username"] | "", 32);
+    }
+    if (doc["password"].is<JsonVariant>() && strlen(doc["password"] | "") > 0) {
+        strncpy(config.password, doc["password"] | "", 64);
+    }
+    if (doc["topicPrefix"].is<JsonVariant>()) {
+        strncpy(config.topicPrefix, doc["topicPrefix"] | "", 64);
+    }
+    if (doc["enabled"].is<JsonVariant>()) {
+        config.enabled = doc["enabled"];
+    }
+    if (doc["publishOnChange"].is<JsonVariant>()) {
+        config.publishOnChange = doc["publishOnChange"];
+    }
+    if (doc["publishThreshold"].is<JsonVariant>()) {
+        config.publishThreshold = doc["publishThreshold"];
+    }
+    if (doc["publishInterval"].is<JsonVariant>()) {
+        config.publishInterval = doc["publishInterval"];
+    }
+    
+    configManager.save();
+    
+    // Trigger MQTT reconnection
+    mqttClient.reconnect();
+    
+    sendSuccess(request, "MQTT configuration updated");
+}
+
+void WebServer::handleGetSystemConfig(AsyncWebServerRequest* request) {
+    const SystemConfig& config = configManager.getSystemConfig();
+    
+    JsonDocument doc;
+    doc["deviceName"] = config.deviceName;
+    doc["readInterval"] = config.readInterval;
+    doc["celsiusUnits"] = config.celsiusUnits;
+    doc["utcOffset"] = config.utcOffset;
+    doc["otaEnabled"] = config.otaEnabled;
+    
+    char buffer[256];
+    serializeJson(doc, buffer, sizeof(buffer));
+    sendJson(request, 200, buffer);
+}
+
+void WebServer::handleUpdateSystemConfig(AsyncWebServerRequest* request,
+                                          uint8_t* data, size_t len) {
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, data, len);
+    
+    if (error) {
+        sendError(request, 400, "Invalid JSON");
+        return;
+    }
+    
+    SystemConfig& config = configManager.getSystemConfig();
+    
+    if (doc["deviceName"].is<JsonVariant>()) {
+        strncpy(config.deviceName, doc["deviceName"] | "", 32);
+    }
+    if (doc["readInterval"].is<JsonVariant>()) {
+        config.readInterval = doc["readInterval"];
+    }
+    if (doc["celsiusUnits"].is<JsonVariant>()) {
+        config.celsiusUnits = doc["celsiusUnits"];
+    }
+    if (doc["utcOffset"].is<JsonVariant>()) {
+        config.utcOffset = doc["utcOffset"];
+    }
+    if (doc["otaEnabled"].is<JsonVariant>()) {
+        config.otaEnabled = doc["otaEnabled"];
+    }
+    
+    configManager.save();
+    
+    sendSuccess(request, "System configuration updated");
+}
+
+void WebServer::handleWiFiScan(AsyncWebServerRequest* request) {
+    int16_t count = wifiManager.scanNetworks();
+    
+    JsonDocument doc;
+    JsonArray networks = doc.to<JsonArray>();
+    
+    for (int16_t i = 0; i < count; i++) {
+        String ssid;
+        int32_t rssi;
+        bool encrypted;
+        
+        if (wifiManager.getScannedNetwork(i, ssid, rssi, encrypted)) {
+            JsonObject net = networks.add<JsonObject>();
+            net["ssid"] = ssid;
+            net["rssi"] = rssi;
+            net["encrypted"] = encrypted;
+            
+            // Signal strength as percentage
+            int strength = 0;
+            if (rssi >= -50) strength = 100;
+            else if (rssi <= -100) strength = 0;
+            else strength = 2 * (rssi + 100);
+            net["signal"] = strength;
+        }
+    }
+    
+    char buffer[1024];
+    serializeJson(doc, buffer, sizeof(buffer));
+    sendJson(request, 200, buffer);
+}
+
+void WebServer::handleCalibrate(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, data, len);
+    
+    if (error || !doc["referenceTemp"].is<JsonVariant>()) {
+        sendError(request, 400, "Missing referenceTemp");
+        return;
+    }
+    
+    float refTemp = doc["referenceTemp"];
+    sensorManager.calibrateAll(refTemp);
+    
+    sendSuccess(request, "All sensors calibrated");
+}
+
+void WebServer::handleCalibrateSensor(AsyncWebServerRequest* request, uint8_t sensorIndex,
+                                       uint8_t* data, size_t len) {
+    if (sensorIndex >= sensorManager.getSensorCount()) {
+        sendError(request, 404, "Sensor not found");
+        return;
+    }
+    
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, data, len);
+    
+    if (error || !doc["referenceTemp"].is<JsonVariant>()) {
+        sendError(request, 400, "Missing referenceTemp");
+        return;
+    }
+    
+    float refTemp = doc["referenceTemp"];
+    sensorManager.calibrateSensor(sensorIndex, refTemp);
+    configManager.save();
+    
+    sendSuccess(request, "Sensor calibrated");
+}
+
+void WebServer::handleRescan(AsyncWebServerRequest* request) {
+    sensorManager.requestRescan();
+    sendSuccess(request, "Sensor rescan initiated");
+}
+
+void WebServer::handleReboot(AsyncWebServerRequest* request) {
+    sendSuccess(request, "Rebooting...");
+    delay(1000);
+    ESP.restart();
+}
+
+void WebServer::handleFactoryReset(AsyncWebServerRequest* request) {
+    configManager.resetToDefaults();
+    configManager.save();
+    sendSuccess(request, "Factory reset complete. Rebooting...");
+    delay(1000);
+    ESP.restart();
+}
+
+void WebServer::handleGetHistory(AsyncWebServerRequest* request, uint8_t sensorIndex) {
+    if (sensorIndex >= sensorManager.getSensorCount()) {
+        sendError(request, 404, "Sensor not found");
+        return;
+    }
+    
+    const SensorData* data = sensorManager.getSensorData(sensorIndex);
+    
+    JsonDocument doc;
+    JsonArray history = doc.to<JsonArray>();
+    
+    // Output history from oldest to newest
+    for (uint16_t i = 0; i < data->historyCount; i++) {
+        uint16_t idx = (data->historyIndex - data->historyCount + i + TEMP_HISTORY_SIZE) 
+                       % TEMP_HISTORY_SIZE;
+        if (data->history[idx] != TEMP_INVALID) {
+            history.add(data->history[idx]);
+        }
+    }
+    
+    char buffer[512];
+    serializeJson(doc, buffer, sizeof(buffer));
+    sendJson(request, 200, buffer);
+}
+
+// ============================================================================
+// WebSocket Handlers
+// ============================================================================
+
+void WebServer::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
+                          AwsEventType type, void* arg, uint8_t* data, size_t len) {
+    switch (type) {
+        case WS_EVT_CONNECT:
+            Serial.printf("[WebServer] WebSocket client %u connected\n", client->id());
+            // Send initial data
+            sendSensorUpdate();
+            break;
+            
+        case WS_EVT_DISCONNECT:
+            Serial.printf("[WebServer] WebSocket client %u disconnected\n", client->id());
+            break;
+            
+        case WS_EVT_DATA:
+            handleWsMessage(client, data, len);
+            break;
+            
+        case WS_EVT_ERROR:
+            Serial.printf("[WebServer] WebSocket error from client %u\n", client->id());
+            break;
+            
+        default:
+            break;
+    }
+}
+
+void WebServer::handleWsMessage(AsyncWebSocketClient* client, uint8_t* data, size_t len) {
+    // Parse message
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, data, len);
+    
+    if (error) {
+        return;
+    }
+    
+    const char* cmd = doc["cmd"] | "";
+    
+    if (strcmp(cmd, "refresh") == 0) {
+        sendSensorUpdate();
+    }
+}
+
+// ============================================================================
+// Utility Methods
+// ============================================================================
+
+void WebServer::sendJson(AsyncWebServerRequest* request, int code, const char* json) {
+    request->send(code, "application/json", json);
+}
+
+void WebServer::sendError(AsyncWebServerRequest* request, int code, const char* message) {
+    JsonDocument doc;
+    doc["error"] = true;
+    doc["message"] = message;
+    
+    char buffer[128];
+    serializeJson(doc, buffer, sizeof(buffer));
+    sendJson(request, code, buffer);
+}
+
+void WebServer::sendSuccess(AsyncWebServerRequest* request, const char* message) {
+    JsonDocument doc;
+    doc["success"] = true;
+    if (message) {
+        doc["message"] = message;
+    }
+    
+    char buffer[128];
+    serializeJson(doc, buffer, sizeof(buffer));
+    sendJson(request, 200, buffer);
+}
+
+void WebServer::buildSensorJson(JsonObject& obj, uint8_t sensorIndex) {
+    const SensorData* data = sensorManager.getSensorData(sensorIndex);
+    if (!data) {
+        return;
+    }
+    
+    const SensorConfig* config = configManager.getSensorConfigByAddress(data->addressStr);
+    
+    obj["index"] = sensorIndex;
+    obj["address"] = data->addressStr;
+    obj["connected"] = data->connected;
+    obj["temperature"] = round(data->temperature * 100) / 100.0;
+    obj["rawTemperature"] = round(data->rawTemperature * 100) / 100.0;
+    obj["alarm"] = alarmStateToString(data->alarmState);
+    
+    if (config) {
+        obj["name"] = config->name;
+        obj["calibrationOffset"] = config->calibrationOffset;
+        obj["thresholdLow"] = config->thresholdLow;
+        obj["thresholdHigh"] = config->thresholdHigh;
+        obj["alertEnabled"] = config->alertEnabled;
+    }
+}

@@ -1,0 +1,510 @@
+/*
+ * ESP32 Temperature Monitoring System
+ * MQTT Client Implementation
+ */
+
+#include "mqtt_client.h"
+#include <ArduinoJson.h>
+#include "wifi_manager.h"
+
+// Global instance
+MQTTClient mqttClient;
+
+// Static callback wrapper
+static MQTTClient* _mqttInstance = nullptr;
+
+// ============================================================================
+// Constructor
+// ============================================================================
+
+MQTTClient::MQTTClient() :
+    _client(_wifiClient),
+    _lastConnectAttempt(0),
+    _lastPublishTime(0),
+    _publishCount(0),
+    _haDiscoveryPublished(false) {
+    _lastError[0] = '\0';
+    
+    for (uint8_t i = 0; i < MAX_SENSORS; i++) {
+        _lastPublishedTemp[i] = TEMP_INVALID;
+    }
+    
+    _mqttInstance = this;
+}
+
+// ============================================================================
+// Public Methods
+// ============================================================================
+
+void MQTTClient::begin() {
+    Serial.println(F("[MQTT] Initializing..."));
+    
+    _client.setCallback(messageCallback);
+    _client.setKeepAlive(MQTT_KEEP_ALIVE);
+    
+    // Buffer size for larger messages (HA discovery)
+    _client.setBufferSize(512);
+}
+
+void MQTTClient::update() {
+    if (!isEnabled()) {
+        return;
+    }
+    
+    // Check WiFi connection
+    if (!wifiManager.isConnected()) {
+        return;
+    }
+    
+    uint32_t now = millis();
+    
+    // Handle MQTT connection
+    if (!_client.connected()) {
+        if (now - _lastConnectAttempt >= MQTT_RECONNECT_INTERVAL) {
+            _lastConnectAttempt = now;
+            connect();
+        }
+        return;
+    }
+    
+    // Process incoming messages
+    _client.loop();
+    
+    // Publish Home Assistant discovery once connected
+    if (!_haDiscoveryPublished) {
+        publishHADiscovery();
+        _haDiscoveryPublished = true;
+    }
+    
+    // Periodic temperature publishing
+    const MQTTConfig& config = configManager.getMQTTConfig();
+    uint32_t publishInterval = config.publishInterval * 1000;
+    
+    if (now - _lastPublishTime >= publishInterval) {
+        publishTemperatures();
+        _lastPublishTime = now;
+    }
+}
+
+bool MQTTClient::isEnabled() const {
+    const MQTTConfig& config = configManager.getMQTTConfig();
+    return config.enabled && strlen(config.server) > 0;
+}
+
+void MQTTClient::reconnect() {
+    _lastConnectAttempt = 0;
+    _haDiscoveryPublished = false;
+    
+    if (_client.connected()) {
+        _client.disconnect();
+    }
+}
+
+void MQTTClient::disconnect() {
+    if (_client.connected()) {
+        publishStatus(false);
+        _client.disconnect();
+    }
+}
+
+void MQTTClient::publishTemperatures() {
+    if (!_client.connected()) {
+        return;
+    }
+    
+    const MQTTConfig& config = configManager.getMQTTConfig();
+    
+    for (uint8_t i = 0; i < sensorManager.getSensorCount(); i++) {
+        const SensorData* data = sensorManager.getSensorData(i);
+        if (!data || !data->connected) {
+            continue;
+        }
+        
+        // Check if we should publish based on change threshold
+        if (config.publishOnChange && !shouldPublishTemperature(i, data->temperature)) {
+            continue;
+        }
+        
+        publishSensorTemperature(i);
+    }
+}
+
+void MQTTClient::publishSensorTemperature(uint8_t sensorIndex) {
+    if (!_client.connected()) {
+        return;
+    }
+    
+    const SensorData* data = sensorManager.getSensorData(sensorIndex);
+    if (!data) {
+        return;
+    }
+    
+    const SensorConfig* config = configManager.getSensorConfigByAddress(data->addressStr);
+    
+    // Build topic
+    char topic[128];
+    buildSensorTopic(topic, sizeof(topic), sensorIndex, TOPIC_TEMPERATURE);
+    
+    // Build JSON payload
+    JsonDocument doc;
+    doc["temperature"] = round(data->temperature * 100) / 100.0;
+    doc["raw_temperature"] = round(data->rawTemperature * 100) / 100.0;
+    doc["unit"] = configManager.getSystemConfig().celsiusUnits ? "C" : "F";
+    doc["alarm"] = alarmStateToString(data->alarmState);
+    doc["connected"] = data->connected;
+    
+    if (config) {
+        doc["name"] = config->name;
+        doc["address"] = config->address;
+    }
+    
+    char payload[256];
+    serializeJson(doc, payload, sizeof(payload));
+    
+    if (_client.publish(topic, payload)) {
+        _publishCount++;
+        _lastPublishedTemp[sensorIndex] = data->temperature;
+    } else {
+        strcpy(_lastError, "Failed to publish temperature");
+        Serial.printf("[MQTT] Failed to publish to %s\n", topic);
+    }
+}
+
+void MQTTClient::publishAlarm(uint8_t sensorIndex, AlarmState state, float temperature) {
+    if (!_client.connected()) {
+        return;
+    }
+    
+    const SensorData* data = sensorManager.getSensorData(sensorIndex);
+    const SensorConfig* config = data ? 
+        configManager.getSensorConfigByAddress(data->addressStr) : nullptr;
+    
+    // Build topic
+    char topic[128];
+    buildSensorTopic(topic, sizeof(topic), sensorIndex, TOPIC_ALARM);
+    
+    // Build JSON payload
+    JsonDocument doc;
+    doc["alarm"] = alarmStateToString(state);
+    doc["temperature"] = round(temperature * 100) / 100.0;
+    doc["timestamp"] = millis() / 1000;
+    
+    if (config) {
+        doc["name"] = config->name;
+        doc["address"] = config->address;
+        doc["threshold_low"] = config->thresholdLow;
+        doc["threshold_high"] = config->thresholdHigh;
+    }
+    
+    char payload[256];
+    serializeJson(doc, payload, sizeof(payload));
+    
+    // Publish with retain flag for alarms
+    if (_client.publish(topic, payload, true)) {
+        _publishCount++;
+        Serial.printf("[MQTT] Published alarm: %s = %s\n", topic, alarmStateToString(state));
+    } else {
+        strcpy(_lastError, "Failed to publish alarm");
+    }
+}
+
+void MQTTClient::publishStatus(bool online) {
+    if (!_client.connected() && online) {
+        return;
+    }
+    
+    const MQTTConfig& mqttConfig = configManager.getMQTTConfig();
+    const SystemConfig& sysConfig = configManager.getSystemConfig();
+    
+    // Build topic
+    char topic[128];
+    snprintf(topic, sizeof(topic), "%s/%s/%s",
+        mqttConfig.topicPrefix,
+        sysConfig.deviceName,
+        TOPIC_STATUS
+    );
+    
+    // Build JSON payload
+    JsonDocument doc;
+    doc["online"] = online;
+    doc["ip"] = wifiManager.getIP().toString();
+    doc["rssi"] = wifiManager.getRSSI();
+    doc["uptime"] = millis() / 1000;
+    doc["sensors"] = sensorManager.getSensorCount();
+    doc["firmware"] = FIRMWARE_VERSION;
+    
+    char payload[256];
+    serializeJson(doc, payload, sizeof(payload));
+    
+    // Publish with retain flag
+    _client.publish(topic, payload, true);
+    _publishCount++;
+}
+
+void MQTTClient::publishHADiscovery() {
+    if (!_client.connected()) {
+        return;
+    }
+    
+    Serial.println(F("[MQTT] Publishing Home Assistant discovery..."));
+    
+    for (uint8_t i = 0; i < sensorManager.getSensorCount(); i++) {
+        publishHADiscoverySensor(i);
+    }
+}
+
+// ============================================================================
+// Private Methods
+// ============================================================================
+
+bool MQTTClient::connect() {
+    const MQTTConfig& config = configManager.getMQTTConfig();
+    const SystemConfig& sysConfig = configManager.getSystemConfig();
+    
+    Serial.printf("[MQTT] Connecting to %s:%d\n", config.server, config.port);
+    
+    _client.setServer(config.server, config.port);
+    
+    // Generate client ID
+    char clientId[32];
+    snprintf(clientId, sizeof(clientId), "%s%08X", 
+        MQTT_CLIENT_PREFIX, (uint32_t)ESP.getEfuseMac());
+    
+    // Build last will topic
+    char willTopic[128];
+    snprintf(willTopic, sizeof(willTopic), "%s/%s/%s",
+        config.topicPrefix,
+        sysConfig.deviceName,
+        TOPIC_STATUS
+    );
+    
+    // Last will message
+    const char* willMessage = "{\"online\":false}";
+    
+    bool connected = false;
+    
+    if (strlen(config.username) > 0) {
+        connected = _client.connect(
+            clientId,
+            config.username,
+            config.password,
+            willTopic,
+            0,      // QoS
+            true,   // Retain
+            willMessage
+        );
+    } else {
+        connected = _client.connect(
+            clientId,
+            willTopic,
+            0,
+            true,
+            willMessage
+        );
+    }
+    
+    if (connected) {
+        Serial.println(F("[MQTT] Connected"));
+        
+        // Subscribe to command topic
+        char cmdTopic[128];
+        snprintf(cmdTopic, sizeof(cmdTopic), "%s/%s/%s/#",
+            config.topicPrefix,
+            sysConfig.deviceName,
+            TOPIC_COMMAND
+        );
+        _client.subscribe(cmdTopic);
+        
+        // Publish online status
+        publishStatus(true);
+        
+        _lastError[0] = '\0';
+        return true;
+    } else {
+        int state = _client.state();
+        snprintf(_lastError, sizeof(_lastError), "Connection failed: %d", state);
+        Serial.printf("[MQTT] %s\n", _lastError);
+        return false;
+    }
+}
+
+void MQTTClient::buildTopic(char* buffer, size_t bufferSize, ...) {
+    const MQTTConfig& config = configManager.getMQTTConfig();
+    const SystemConfig& sysConfig = configManager.getSystemConfig();
+    
+    // Start with prefix/device_name
+    snprintf(buffer, bufferSize, "%s/%s", config.topicPrefix, sysConfig.deviceName);
+    
+    va_list args;
+    va_start(args, bufferSize);
+    
+    const char* part;
+    while ((part = va_arg(args, const char*)) != nullptr) {
+        size_t len = strlen(buffer);
+        snprintf(buffer + len, bufferSize - len, "/%s", part);
+    }
+    
+    va_end(args);
+}
+
+void MQTTClient::buildSensorTopic(char* buffer, size_t bufferSize,
+                                   uint8_t sensorIndex, const char* suffix) {
+    const MQTTConfig& config = configManager.getMQTTConfig();
+    const SystemConfig& sysConfig = configManager.getSystemConfig();
+    
+    const SensorData* data = sensorManager.getSensorData(sensorIndex);
+    const SensorConfig* sensorConfig = data ?
+        configManager.getSensorConfigByAddress(data->addressStr) : nullptr;
+    
+    // Use sensor name (sanitized) or index
+    char sensorId[SENSOR_NAME_MAX_LEN];
+    if (sensorConfig && strlen(sensorConfig->name) > 0) {
+        strncpy(sensorId, sensorConfig->name, sizeof(sensorId) - 1);
+        sensorId[sizeof(sensorId) - 1] = '\0';
+        
+        // Sanitize: replace spaces and special chars with underscores
+        for (char* p = sensorId; *p; p++) {
+            if (*p == ' ' || *p == '/' || *p == '#' || *p == '+') {
+                *p = '_';
+            }
+        }
+    } else {
+        snprintf(sensorId, sizeof(sensorId), "sensor_%d", sensorIndex);
+    }
+    
+    snprintf(buffer, bufferSize, "%s/%s/%s/%s/%s",
+        config.topicPrefix,
+        sysConfig.deviceName,
+        TOPIC_SENSOR,
+        sensorId,
+        suffix
+    );
+}
+
+void MQTTClient::messageCallback(char* topic, byte* payload, unsigned int length) {
+    if (_mqttInstance) {
+        // Null-terminate payload
+        char message[256];
+        size_t copyLen = min((size_t)length, sizeof(message) - 1);
+        memcpy(message, payload, copyLen);
+        message[copyLen] = '\0';
+        
+        _mqttInstance->handleMessage(topic, message);
+    }
+}
+
+void MQTTClient::handleMessage(const char* topic, const char* payload) {
+    Serial.printf("[MQTT] Received: %s = %s\n", topic, payload);
+    
+    // Parse command from topic
+    // Expected format: {prefix}/{device}/cmd/{command}
+    
+    if (strstr(topic, "/cmd/calibrate")) {
+        // Calibration command
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, payload);
+        
+        if (!error && doc["reference_temp"].is<JsonVariant>()) {
+            float refTemp = doc["reference_temp"];
+            sensorManager.calibrateAll(refTemp);
+            Serial.printf("[MQTT] Calibration triggered with reference: %.2f\n", refTemp);
+        }
+    }
+    else if (strstr(topic, "/cmd/rescan")) {
+        // Rescan sensors
+        sensorManager.requestRescan();
+        Serial.println(F("[MQTT] Sensor rescan requested"));
+    }
+    else if (strstr(topic, "/cmd/reboot")) {
+        // Reboot device
+        Serial.println(F("[MQTT] Reboot requested"));
+        delay(1000);
+        ESP.restart();
+    }
+}
+
+bool MQTTClient::shouldPublishTemperature(uint8_t sensorIndex, float temperature) {
+    if (sensorIndex >= MAX_SENSORS) {
+        return false;
+    }
+    
+    if (_lastPublishedTemp[sensorIndex] == TEMP_INVALID) {
+        return true;
+    }
+    
+    const MQTTConfig& config = configManager.getMQTTConfig();
+    float diff = abs(temperature - _lastPublishedTemp[sensorIndex]);
+    
+    return diff >= config.publishThreshold;
+}
+
+void MQTTClient::publishHADiscoverySensor(uint8_t sensorIndex) {
+    const SensorData* data = sensorManager.getSensorData(sensorIndex);
+    if (!data) {
+        return;
+    }
+    
+    const SensorConfig* sensorConfig = configManager.getSensorConfigByAddress(data->addressStr);
+    const SystemConfig& sysConfig = configManager.getSystemConfig();
+    const MQTTConfig& mqttConfig = configManager.getMQTTConfig();
+    
+    // Generate unique ID
+    char uniqueId[48];
+    snprintf(uniqueId, sizeof(uniqueId), "esp32_temp_%s_%s", 
+        WiFi.macAddress().c_str(), data->addressStr);
+    
+    // Remove colons from MAC
+    for (char* p = uniqueId; *p; p++) {
+        if (*p == ':') *p = '_';
+    }
+    
+    // Sensor name
+    char sensorName[64];
+    if (sensorConfig && strlen(sensorConfig->name) > 0) {
+        snprintf(sensorName, sizeof(sensorName), "%s %s", 
+            sysConfig.deviceName, sensorConfig->name);
+    } else {
+        snprintf(sensorName, sizeof(sensorName), "%s Sensor %d", 
+            sysConfig.deviceName, sensorIndex + 1);
+    }
+    
+    // State topic
+    char stateTopic[128];
+    buildSensorTopic(stateTopic, sizeof(stateTopic), sensorIndex, TOPIC_TEMPERATURE);
+    
+    // Discovery topic
+    char discoveryTopic[128];
+    snprintf(discoveryTopic, sizeof(discoveryTopic), 
+        "%s/sensor/%s/config", HA_DISCOVERY_PREFIX, uniqueId);
+    
+    // Build discovery payload
+    JsonDocument doc;
+    doc["name"] = sensorName;
+    doc["unique_id"] = uniqueId;
+    doc["state_topic"] = stateTopic;
+    doc["value_template"] = "{{ value_json.temperature }}";
+    doc["unit_of_measurement"] = sysConfig.celsiusUnits ? "°C" : "°F";
+    doc["device_class"] = "temperature";
+    doc["state_class"] = "measurement";
+    
+    // Device info
+    JsonObject device = doc["device"].to<JsonObject>();
+    device["identifiers"][0] = WiFi.macAddress();
+    device["name"] = sysConfig.deviceName;
+    device["model"] = "ESP32 Temperature Monitor";
+    device["manufacturer"] = "DIY";
+    device["sw_version"] = FIRMWARE_VERSION;
+    
+    // Availability
+    char availTopic[128];
+    snprintf(availTopic, sizeof(availTopic), "%s/%s/%s",
+        mqttConfig.topicPrefix, sysConfig.deviceName, TOPIC_STATUS);
+    doc["availability_topic"] = availTopic;
+    doc["availability_template"] = "{{ 'online' if value_json.online else 'offline' }}";
+    
+    char payload[512];
+    serializeJson(doc, payload, sizeof(payload));
+    
+    _client.publish(discoveryTopic, payload, true);
+    Serial.printf("[MQTT] Published HA discovery for sensor %d\n", sensorIndex);
+}
