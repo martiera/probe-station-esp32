@@ -1,17 +1,18 @@
 /*
- * Display Manager Implementation for TTGO T-Display
+ * Display Manager for TTGO T-Display
+ * Handles TFT display output for temperature readings
  */
 
 #include "display_manager.h"
 #include "sensor_manager.h"
 #include "wifi_manager.h"
 #include "mqtt_client.h"
-#include "config_manager.h"
+#include <WiFi.h>
 
 // Global instance
 DisplayManager displayManager;
 
-DisplayManager::DisplayManager()
+DisplayManager::DisplayManager() 
 #ifdef USE_DISPLAY
     : sprite(&tft)
 #endif
@@ -20,8 +21,6 @@ DisplayManager::DisplayManager()
 
 void DisplayManager::begin() {
 #ifdef USE_DISPLAY
-    DEBUG_PRINTLN(F("[Display] Initializing TFT..."));
-    
     tft.init();
     tft.setRotation(1);  // Landscape mode
     tft.fillScreen(COLOR_BG);
@@ -30,23 +29,16 @@ void DisplayManager::begin() {
     sprite.createSprite(DISPLAY_WIDTH, DISPLAY_HEIGHT);
     sprite.setTextDatum(TL_DATUM);
     
-    // Set backlight
+    // Set backlight pin
     pinMode(TFT_BL, OUTPUT);
     setBrightness(brightness);
     
-    // Show splash screen
-    tft.setTextColor(COLOR_HEADER);
+    // Show boot screen
     tft.setTextDatum(MC_DATUM);
-    tft.drawString("Temperature Monitor", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 - 15, 2);
-    tft.setTextColor(COLOR_TEXT);
-    tft.drawString("v" + String(FIRMWARE_VERSION), DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 + 15, 2);
-    
-    delay(1500);
-    
-    needsRefresh = true;
-    DEBUG_PRINTLN(F("[Display] TFT initialized"));
-#else
-    DEBUG_PRINTLN(F("[Display] Display support disabled"));
+    tft.setTextColor(TFT_CYAN, COLOR_BG);
+    tft.drawString("Probe Station", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 - 20, 4);
+    tft.setTextColor(TFT_WHITE, COLOR_BG);
+    tft.drawString("Initializing...", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 + 20, 2);
 #endif
 }
 
@@ -54,66 +46,119 @@ void DisplayManager::update() {
 #ifdef USE_DISPLAY
     uint32_t now = millis();
     
-    // Check if update needed
-    if (!needsRefresh && (now - lastUpdate < UPDATE_INTERVAL)) {
-        return;
+    // Auto-rotate in focus mode
+    if (autoRotate && currentPage == DisplayPage::FOCUS && sensorManager != nullptr) {
+        if (now - lastAutoRotate >= AUTO_ROTATE_INTERVAL) {
+            uint8_t count = sensorManager->getSensorCount();
+            if (count > 0) {
+                focusSensorIndex = (focusSensorIndex + 1) % count;
+                needsRefresh = true;
+            }
+            lastAutoRotate = now;
+        }
     }
     
-    lastUpdate = now;
-    needsRefresh = false;
-    
-    // Clear sprite
-    sprite.fillSprite(COLOR_BG);
-    
-    // Draw current page
-    switch (currentPage) {
-        case DisplayPage::SENSORS:
-            drawSensorsPage();
-            break;
-        case DisplayPage::STATUS:
-            drawStatusPage();
-            break;
-        case DisplayPage::ALERTS:
-            drawAlertsPage();
-            break;
-        case DisplayPage::INFO:
-            drawInfoPage();
-            break;
+    // Update display at interval
+    if (needsRefresh || (now - lastUpdate >= UPDATE_INTERVAL)) {
+        sprite.fillSprite(COLOR_BG);
+        
+        drawStatusBar();
+        
+        switch (currentPage) {
+            case DisplayPage::FOCUS:
+                drawFocusPage();
+                break;
+            case DisplayPage::SENSORS:
+                drawSensorsPage();
+                break;
+            case DisplayPage::STATUS:
+                drawStatusPage();
+                break;
+            case DisplayPage::ALERTS:
+                drawAlertsPage();
+                break;
+        }
+        
+        drawFooter();
+        
+        // Push sprite to display
+        sprite.pushSprite(0, 0);
+        
+        lastUpdate = now;
+        needsRefresh = false;
     }
-    
-    // Draw footer with navigation hint
-    drawFooter();
-    
-    // Push sprite to display
-    sprite.pushSprite(0, 0);
 #endif
 }
 
 void DisplayManager::nextPage() {
-    uint8_t page = static_cast<uint8_t>(currentPage);
-    page = (page + 1) % 4;
-    currentPage = static_cast<DisplayPage>(page);
-    sensorPageOffset = 0;
+    uint32_t now = millis();
+    if (now - lastButtonPress < BUTTON_DEBOUNCE) return;
+    lastButtonPress = now;
+    
+    switch (currentPage) {
+        case DisplayPage::FOCUS:
+            currentPage = DisplayPage::SENSORS;
+            sensorPageOffset = 0;
+            break;
+        case DisplayPage::SENSORS:
+            currentPage = DisplayPage::STATUS;
+            break;
+        case DisplayPage::STATUS:
+            currentPage = DisplayPage::ALERTS;
+            break;
+        case DisplayPage::ALERTS:
+            currentPage = DisplayPage::FOCUS;
+            break;
+    }
     needsRefresh = true;
-    DEBUG_PRINTF("[Display] Page: %d\n", page);
 }
 
 void DisplayManager::previousPage() {
-    uint8_t page = static_cast<uint8_t>(currentPage);
-    page = (page + 3) % 4;  // +3 is same as -1 mod 4
-    currentPage = static_cast<DisplayPage>(page);
-    sensorPageOffset = 0;
+    uint32_t now = millis();
+    if (now - lastButtonPress < BUTTON_DEBOUNCE) return;
+    lastButtonPress = now;
+    
+    switch (currentPage) {
+        case DisplayPage::FOCUS:
+            currentPage = DisplayPage::ALERTS;
+            break;
+        case DisplayPage::SENSORS:
+            currentPage = DisplayPage::FOCUS;
+            break;
+        case DisplayPage::STATUS:
+            currentPage = DisplayPage::SENSORS;
+            sensorPageOffset = 0;
+            break;
+        case DisplayPage::ALERTS:
+            currentPage = DisplayPage::STATUS;
+            break;
+    }
     needsRefresh = true;
 }
 
 void DisplayManager::nextSensorPage() {
+    uint32_t now = millis();
+    if (now - lastButtonPress < BUTTON_DEBOUNCE) return;
+    lastButtonPress = now;
+    
     if (sensorManager == nullptr) return;
     
-    uint8_t sensorCount = sensorManager->getSensorCount();
-    if (sensorCount > SENSORS_PER_PAGE) {
-        sensorPageOffset = (sensorPageOffset + SENSORS_PER_PAGE) % sensorCount;
-        needsRefresh = true;
+    if (currentPage == DisplayPage::FOCUS) {
+        // Cycle through sensors in focus mode
+        uint8_t count = sensorManager->getSensorCount();
+        if (count > 0) {
+            focusSensorIndex = (focusSensorIndex + 1) % count;
+            lastAutoRotate = millis();  // Reset auto-rotate timer
+        }
+    } else if (currentPage == DisplayPage::SENSORS) {
+        // Scroll through sensor pages
+        uint8_t count = sensorManager->getSensorCount();
+        sensorPageOffset += SENSORS_PER_PAGE;
+        if (sensorPageOffset >= count) {
+            sensorPageOffset = 0;
+        }
     }
+    needsRefresh = true;
 }
 
 void DisplayManager::refresh() {
@@ -121,317 +166,409 @@ void DisplayManager::refresh() {
 }
 
 void DisplayManager::setBrightness(uint8_t level) {
-#ifdef USE_DISPLAY
     brightness = level;
-    // Use PWM for brightness control
-    analogWrite(TFT_BL, level);
+#ifdef USE_DISPLAY
+    analogWrite(TFT_BL, brightness);
 #endif
 }
 
 void DisplayManager::handleButton1() {
-    uint32_t now = millis();
-    if (now - lastButtonPress < BUTTON_DEBOUNCE) return;
-    lastButtonPress = now;
-    
-    if (currentPage == DisplayPage::SENSORS) {
-        nextSensorPage();
-    } else {
-        nextPage();
+    // Top button short press - next sensor/scroll
+    nextSensorPage();
+}
+
+void DisplayManager::handleButton1LongPress() {
+    // Top button long press - toggle auto-rotate (only on FOCUS page)
+    if (currentPage == DisplayPage::FOCUS) {
+        toggleAutoRotate();
     }
 }
 
 void DisplayManager::handleButton2() {
-    uint32_t now = millis();
-    if (now - lastButtonPress < BUTTON_DEBOUNCE) return;
-    lastButtonPress = now;
-    
+    // Bottom button - next page
     nextPage();
 }
 
+void DisplayManager::drawStatusBar() {
 #ifdef USE_DISPLAY
-
-void DisplayManager::drawHeader(const char* title) {
-    sprite.fillRect(0, 0, DISPLAY_WIDTH, 20, COLOR_HEADER);
-    sprite.setTextColor(COLOR_BG);
+    // Top status bar (20px high)
+    const int16_t barHeight = 20;
+    
+    // Determine status bar color based on alarm state
+    uint16_t barColor = COLOR_HEADER;
+    if (sensorManager != nullptr) {
+        // Check for any alarms
+        for (uint8_t i = 0; i < sensorManager->getSensorCount(); i++) {
+            const SensorData* sensor = sensorManager->getSensorData(i);
+            if (sensor != nullptr) {
+                if (sensor->alarmState == AlarmState::ABOVE_HIGH) {
+                    barColor = COLOR_TEMP_ALERT;
+                    break;
+                } else if (sensor->alarmState == AlarmState::BELOW_LOW) {
+                    barColor = COLOR_TEMP_COLD;
+                    break;
+                } else if (sensor->alarmState == AlarmState::SENSOR_ERROR) {
+                    barColor = COLOR_TEMP_WARN;
+                }
+            }
+        }
+    }
+    
+    // Draw top bar
+    sprite.fillRect(0, 0, DISPLAY_WIDTH, barHeight, barColor);
+    
+    // WiFi indicator (left)
+    sprite.setTextDatum(ML_DATUM);
+    sprite.setTextColor(COLOR_TEXT, barColor);
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        int8_t rssi = WiFi.RSSI();
+        const char* wifiIcon = rssi > -50 ? "WiFi" : rssi > -70 ? "WiFi" : "WiFi!";
+        sprite.drawString(wifiIcon, 4, barHeight/2, 2);
+    } else {
+        sprite.drawString("AP", 4, barHeight/2, 2);
+    }
+    
+    // Page name (center) - show AUTO/MAN for FOCUS page
     sprite.setTextDatum(MC_DATUM);
-    sprite.drawString(title, DISPLAY_WIDTH/2, 10, 2);
-    sprite.setTextDatum(TL_DATUM);
+    const char* pageName = "";
+    switch (currentPage) {
+        case DisplayPage::FOCUS:   pageName = autoRotate ? "FOCUS-A" : "FOCUS-M"; break;
+        case DisplayPage::SENSORS: pageName = "SENSORS"; break;
+        case DisplayPage::STATUS:  pageName = "STATUS"; break;
+        case DisplayPage::ALERTS:  pageName = "ALERTS"; break;
+    }
+    sprite.drawString(pageName, DISPLAY_WIDTH/2, barHeight/2, 2);
+    
+    // BTN1 action (right) - shown as button style
+    sprite.setTextDatum(MR_DATUM);
+    const char* btn1Text = "";
+    switch (currentPage) {
+        case DisplayPage::FOCUS:
+            btn1Text = "[SENSOR]";
+            break;
+        case DisplayPage::SENSORS:
+            btn1Text = "[SCROLL]";
+            break;
+        default:
+            btn1Text = "";
+            break;
+    }
+    if (btn1Text[0] != '\0') {
+        sprite.drawString(btn1Text, DISPLAY_WIDTH - 4, barHeight/2, 2);
+    }
+#endif
 }
 
 void DisplayManager::drawFooter() {
-    sprite.setTextColor(0x7BEF);  // Gray
-    sprite.setTextDatum(BC_DATUM);
+#ifdef USE_DISPLAY
+    // Minimal footer - just navigation hint and page dots
+    const int16_t footerY = DISPLAY_HEIGHT - 16;
     
-    const char* hint;
-    switch (currentPage) {
-        case DisplayPage::SENSORS:
-            hint = "BTN1:Scroll BTN2:Menu";
-            break;
-        default:
-            hint = "BTN2:Next Page";
-            break;
+    // Page indicator dots (center bottom) ● ○ ○ ○
+    sprite.setTextDatum(MC_DATUM);
+    sprite.setTextColor(COLOR_GRAY, COLOR_BG);
+    
+    char dots[16];
+    uint8_t pageIdx = static_cast<uint8_t>(currentPage);
+    snprintf(dots, sizeof(dots), "%c %c %c %c",
+        pageIdx == 0 ? 'O' : 'o',
+        pageIdx == 1 ? 'O' : 'o',
+        pageIdx == 2 ? 'O' : 'o',
+        pageIdx == 3 ? 'O' : 'o');
+    sprite.drawString(dots, DISPLAY_WIDTH/2, footerY, 2);
+    
+    // Navigation arrow (right bottom)
+    sprite.setTextDatum(MR_DATUM);
+    sprite.setTextColor(COLOR_TEXT, COLOR_BG);
+    sprite.drawString(">>", DISPLAY_WIDTH - 4, footerY, 2);
+#endif
+}
+
+void DisplayManager::drawFocusPage() {
+#ifdef USE_DISPLAY
+    if (sensorManager == nullptr || sensorManager->getSensorCount() == 0) {
+        sprite.setTextDatum(MC_DATUM);
+        sprite.setTextColor(TFT_YELLOW, COLOR_BG);
+        sprite.drawString("No Sensors", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2, 4);
+        return;
     }
-    sprite.drawString(hint, DISPLAY_WIDTH/2, DISPLAY_HEIGHT - 2, 1);
-    sprite.setTextDatum(TL_DATUM);
+    
+    uint8_t count = sensorManager->getSensorCount();
+    if (focusSensorIndex >= count) {
+        focusSensorIndex = 0;
+    }
+    
+    const SensorData* sensor = sensorManager->getSensorData(focusSensorIndex);
+    if (sensor == nullptr) return;
+    
+    // Get sensor config for name and thresholds
+    String sensorName = String("Sensor ") + String(focusSensorIndex + 1);
+    float lowThreshold = DEFAULT_THRESHOLD_LOW;
+    float highThreshold = DEFAULT_THRESHOLD_HIGH;
+    
+    const SensorConfig* cfg = configManager.getSensorConfigByAddress(sensor->addressStr);
+    if (cfg != nullptr) {
+        sensorName = cfg->name;
+        lowThreshold = cfg->thresholdLow;
+        highThreshold = cfg->thresholdHigh;
+    }
+    
+    // Sensor name (top, medium font)
+    sprite.setTextDatum(TC_DATUM);
+    sprite.setTextColor(TFT_CYAN, COLOR_BG);
+    sprite.drawString(sensorName.c_str(), DISPLAY_WIDTH/2, 24, 2);
+    
+    // Temperature (center, BIG font)
+    sprite.setTextDatum(MC_DATUM);
+    
+    if (!sensor->connected) {
+        sprite.setTextColor(COLOR_TEMP_ALERT, COLOR_BG);
+        sprite.drawString("ERROR", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 + 5, 4);
+    } else {
+        uint16_t tempColor = getTemperatureColor(sensor->temperature, lowThreshold, highThreshold);
+        sprite.setTextColor(tempColor, COLOR_BG);
+        
+        // Draw temperature with Font 6 (48px numbers)
+        char tempStr[16];
+        snprintf(tempStr, sizeof(tempStr), "%.1f", sensor->temperature);
+        sprite.drawString(tempStr, DISPLAY_WIDTH/2 - 15, DISPLAY_HEIGHT/2 + 5, 6);
+        
+        // Draw °C with smaller font
+        sprite.setTextDatum(ML_DATUM);
+        sprite.drawString("C", DISPLAY_WIDTH/2 + 55, DISPLAY_HEIGHT/2 + 5, 4);
+    }
+    
+    // Sensor index indicator - position above bottom bar
+    sprite.setTextDatum(MC_DATUM);
+    sprite.setTextColor(COLOR_GRAY, COLOR_BG);
+    char idxStr[16];
+    snprintf(idxStr, sizeof(idxStr), "< %d/%d >", focusSensorIndex + 1, count);
+    sprite.drawString(idxStr, DISPLAY_WIDTH/2, DISPLAY_HEIGHT - 28, 2);
+#endif
 }
 
 void DisplayManager::drawSensorsPage() {
-    drawHeader("Sensors");
-    
-    if (sensorManager == nullptr) {
-        sprite.setTextColor(COLOR_TEXT);
-        sprite.drawString("No sensor manager", 10, 40, 2);
+#ifdef USE_DISPLAY
+    if (sensorManager == nullptr || sensorManager->getSensorCount() == 0) {
+        sprite.setTextDatum(MC_DATUM);
+        sprite.setTextColor(TFT_YELLOW, COLOR_BG);
+        sprite.drawString("No Sensors", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2, 4);
         return;
     }
     
-    uint8_t sensorCount = sensorManager->getSensorCount();
+    uint8_t count = sensorManager->getSensorCount();
+    uint8_t totalPages = (count + SENSORS_PER_PAGE - 1) / SENSORS_PER_PAGE;
+    uint8_t currentPageNum = sensorPageOffset / SENSORS_PER_PAGE;
     
-    if (sensorCount == 0) {
-        sprite.setTextColor(COLOR_TEMP_WARN);
-        sprite.drawString("No sensors found", 10, 40, 2);
-        sprite.setTextColor(COLOR_TEXT);
-        sprite.drawString("Check connections", 10, 65, 2);
-        return;
-    }
+    // Content area: 20px to 115px (95px total for 2 sensors)
+    int16_t contentY = 24;
+    int16_t rowHeight = 45;  // Bigger rows for 2 sensors
     
-    // Draw sensors
-    uint8_t y = 25;
-    uint8_t displayed = 0;
-    
-    for (uint8_t i = sensorPageOffset; 
-         i < sensorCount && displayed < SENSORS_PER_PAGE; 
-         i++, displayed++) {
+    for (uint8_t i = 0; i < SENSORS_PER_PAGE && (sensorPageOffset + i) < count; i++) {
+        const SensorData* sensor = sensorManager->getSensorData(sensorPageOffset + i);
+        if (sensor == nullptr) continue;
         
-        const SensorData* data = sensorManager->getSensorData(i);
-        if (!data) continue;
+        int16_t y = contentY + (i * rowHeight);
         
-        const SensorConfig* config = configManager.getSensorConfigByAddress(data->addressStr);
+        // Get sensor config
+        String sensorName = String("Sensor ") + String(sensorPageOffset + i + 1);
+        float lowThreshold = DEFAULT_THRESHOLD_LOW;
+        float highThreshold = DEFAULT_THRESHOLD_HIGH;
         
-        // Sensor name (truncated if needed)
-        String name = config ? String(config->name) : String("Sensor ") + String(i + 1);
-        if (name.length() > 12) {
-            name = name.substring(0, 11) + ".";
+        const SensorConfig* cfg = configManager.getSensorConfigByAddress(sensor->addressStr);
+        if (cfg != nullptr) {
+            sensorName = cfg->name;
+            lowThreshold = cfg->thresholdLow;
+            highThreshold = cfg->thresholdHigh;
         }
         
-        sprite.setTextColor(COLOR_TEXT);
-        sprite.drawString(name, 5, y, 2);
+        // Sensor name (left, truncated if needed)
+        sprite.setTextDatum(TL_DATUM);
+        sprite.setTextColor(TFT_CYAN, COLOR_BG);
         
-        // Temperature value
-        char tempStr[12];
-        if (data->temperature > TEMP_INVALID + 1) {
-            float threshLow = config ? config->thresholdLow : DEFAULT_THRESHOLD_LOW;
-            float threshHigh = config ? config->thresholdHigh : DEFAULT_THRESHOLD_HIGH;
-            
-            uint16_t tempColor = getTemperatureColor(data->temperature, threshLow, threshHigh);
-            sprite.setTextColor(tempColor);
-            
-            snprintf(tempStr, sizeof(tempStr), "%.1fC", data->temperature);
-        } else {
-            sprite.setTextColor(COLOR_TEMP_ALERT);
-            strcpy(tempStr, "ERR");
+        String displayName = sensorName;
+        if (displayName.length() > 12) {
+            displayName = displayName.substring(0, 10) + "..";
         }
+        sprite.drawString(displayName.c_str(), 4, y, 2);
         
+        // Temperature (right, large font 4)
         sprite.setTextDatum(TR_DATUM);
-        sprite.drawString(tempStr, DISPLAY_WIDTH - 5, y, 4);
-        sprite.setTextDatum(TL_DATUM);
         
-        y += 26;
+        if (!sensor->connected) {
+            sprite.setTextColor(COLOR_TEMP_ALERT, COLOR_BG);
+            sprite.drawString("ERR", DISPLAY_WIDTH - 4, y, 4);
+        } else {
+            uint16_t tempColor = getTemperatureColor(sensor->temperature, lowThreshold, highThreshold);
+            sprite.setTextColor(tempColor, COLOR_BG);
+            
+            char tempStr[16];
+            snprintf(tempStr, sizeof(tempStr), "%.1fC", sensor->temperature);
+            sprite.drawString(tempStr, DISPLAY_WIDTH - 4, y, 4);
+        }
+        
+        // Separator line
+        if (i < SENSORS_PER_PAGE - 1 && (sensorPageOffset + i + 1) < count) {
+            sprite.drawLine(4, y + rowHeight - 4, DISPLAY_WIDTH - 4, y + rowHeight - 4, COLOR_GRAY);
+        }
     }
     
-    // Page indicator if multiple pages
-    if (sensorCount > SENSORS_PER_PAGE) {
-        uint8_t currentPageNum = sensorPageOffset / SENSORS_PER_PAGE + 1;
-        uint8_t totalPages = (sensorCount + SENSORS_PER_PAGE - 1) / SENSORS_PER_PAGE;
-        
-        char pageStr[10];
-        snprintf(pageStr, sizeof(pageStr), "%d/%d", currentPageNum, totalPages);
-        
-        sprite.setTextColor(0x7BEF);
-        sprite.setTextDatum(BR_DATUM);
-        sprite.drawString(pageStr, DISPLAY_WIDTH - 5, DISPLAY_HEIGHT - 12, 1);
-        sprite.setTextDatum(TL_DATUM);
-    }
+    // Page indicator - position above bottom bar
+    sprite.setTextDatum(MC_DATUM);
+    sprite.setTextColor(COLOR_GRAY, COLOR_BG);
+    char pageStr[16];
+    snprintf(pageStr, sizeof(pageStr), "%d/%d", currentPageNum + 1, totalPages);
+    sprite.drawString(pageStr, DISPLAY_WIDTH/2, DISPLAY_HEIGHT - 28, 2);
+#endif
 }
 
 void DisplayManager::drawStatusPage() {
-    drawHeader("Status");
+#ifdef USE_DISPLAY
+    int16_t y = 26;
+    int16_t lineHeight = 32;
     
-    uint8_t y = 28;
+    // WiFi Status - IP with bigger font
+    sprite.setTextDatum(TL_DATUM);
+    sprite.setTextColor(COLOR_TEXT, COLOR_BG);
+    sprite.drawString("WiFi:", 8, y, 2);
     
-    // WiFi status
-    sprite.setTextColor(COLOR_TEXT);
-    sprite.drawString("WiFi:", 10, y, 2);
-    
-    if (wifiManager != nullptr) {
-        bool connected = wifiManager->isConnected();
-        sprite.setTextColor(connected ? COLOR_WIFI_ON : COLOR_WIFI_OFF);
-        
-        if (connected) {
-            sprite.drawString(wifiManager->getSSID().c_str(), 70, y, 2);
-            y += 18;
-            sprite.setTextColor(COLOR_TEXT);
-            sprite.drawString("IP:", 10, y, 2);
-            sprite.drawString(wifiManager->getIP().toString().c_str(), 70, y, 2);
-        } else if (wifiManager->isAPMode()) {
-            sprite.setTextColor(COLOR_TEMP_WARN);
-            sprite.drawString("AP Mode", 70, y, 2);
-            y += 18;
-            sprite.setTextColor(COLOR_TEXT);
-            sprite.drawString("SSID:", 10, y, 2);
-            sprite.drawString(AP_SSID, 70, y, 2);
-        } else {
-            sprite.drawString("Disconnected", 70, y, 2);
-        }
+    sprite.setTextDatum(TR_DATUM);
+    if (WiFi.status() == WL_CONNECTED) {
+        sprite.setTextColor(COLOR_WIFI_ON, COLOR_BG);
+        sprite.drawString(WiFi.localIP().toString().c_str(), DISPLAY_WIDTH - 8, y, 4);
     } else {
-        sprite.setTextColor(COLOR_WIFI_OFF);
-        sprite.drawString("N/A", 70, y, 2);
+        sprite.setTextColor(COLOR_WIFI_OFF, COLOR_BG);
+        sprite.drawString("192.168.4.1", DISPLAY_WIDTH - 8, y, 4);
     }
+    y += lineHeight;
     
-    y += 25;
+    // MQTT Status
+    sprite.setTextDatum(TL_DATUM);
+    sprite.setTextColor(COLOR_TEXT, COLOR_BG);
+    sprite.drawString("MQTT:", 8, y, 2);
     
-    // MQTT status
-    sprite.setTextColor(COLOR_TEXT);
-    sprite.drawString("MQTT:", 10, y, 2);
-    
-    if (mqttClient != nullptr) {
-        bool connected = mqttClient->isConnected();
-        sprite.setTextColor(connected ? COLOR_MQTT_ON : COLOR_MQTT_OFF);
-        sprite.drawString(connected ? "Connected" : "Disconnected", 70, y, 2);
+    sprite.setTextDatum(TR_DATUM);
+    if (mqttClient != nullptr && mqttClient->isConnected()) {
+        sprite.setTextColor(COLOR_MQTT_ON, COLOR_BG);
+        sprite.drawString("Connected", DISPLAY_WIDTH - 8, y, 2);
     } else {
-        sprite.setTextColor(COLOR_MQTT_OFF);
-        sprite.drawString("N/A", 70, y, 2);
+        sprite.setTextColor(COLOR_GRAY, COLOR_BG);
+        sprite.drawString("Disconnected", DISPLAY_WIDTH - 8, y, 2);
     }
+    y += lineHeight;
     
-    y += 25;
+    // Uptime
+    sprite.setTextDatum(TL_DATUM);
+    sprite.setTextColor(COLOR_TEXT, COLOR_BG);
+    sprite.drawString("Up:", 8, y, 2);
     
-    // Sensor count
-    sprite.setTextColor(COLOR_TEXT);
-    sprite.drawString("Sensors:", 10, y, 2);
+    sprite.setTextDatum(TR_DATUM);
+    uint32_t uptime = millis() / 1000;
+    uint16_t days = uptime / 86400;
+    uint8_t hours = (uptime % 86400) / 3600;
+    uint8_t mins = (uptime % 3600) / 60;
     
-    if (sensorManager != nullptr) {
-        char countStr[10];
-        snprintf(countStr, sizeof(countStr), "%d", sensorManager->getSensorCount());
-        sprite.setTextColor(COLOR_HEADER);
-        sprite.drawString(countStr, 90, y, 2);
+    char uptimeStr[24];
+    if (days > 0) {
+        snprintf(uptimeStr, sizeof(uptimeStr), "%dd %02dh %02dm", days, hours, mins);
+    } else {
+        snprintf(uptimeStr, sizeof(uptimeStr), "%02dh %02dm", hours, mins);
     }
+    sprite.setTextColor(COLOR_TEMP_OK, COLOR_BG);
+    sprite.drawString(uptimeStr, DISPLAY_WIDTH - 8, y, 2);
+#endif
 }
 
 void DisplayManager::drawAlertsPage() {
-    drawHeader("Alerts");
-    
+#ifdef USE_DISPLAY
     if (sensorManager == nullptr) {
-        sprite.setTextColor(COLOR_TEXT);
-        sprite.drawString("No sensor manager", 10, 40, 2);
+        sprite.setTextDatum(MC_DATUM);
+        sprite.setTextColor(COLOR_GRAY, COLOR_BG);
+        sprite.drawString("No Data", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2, 2);
         return;
     }
     
+    // Count alerts
     uint8_t alertCount = 0;
-    uint8_t y = 28;
-    
-    for (uint8_t i = 0; i < sensorManager->getSensorCount() && y < 110; i++) {
-        const SensorData* data = sensorManager->getSensorData(i);
-        if (!data) continue;
-        
-        if (data->alarmState != AlarmState::NORMAL) {
+    for (uint8_t i = 0; i < sensorManager->getSensorCount(); i++) {
+        const SensorData* sensor = sensorManager->getSensorData(i);
+        if (sensor != nullptr && sensor->alarmState != AlarmState::NORMAL) {
             alertCount++;
-            
-            const SensorConfig* config = configManager.getSensorConfigByAddress(data->addressStr);
-            String name = config ? String(config->name) : String("Sensor ") + String(i + 1);
-            if (name.length() > 10) name = name.substring(0, 9) + ".";
-            
-            // Color based on alarm type
-            uint16_t color;
-            const char* state;
-            switch (data->alarmState) {
-                case AlarmState::BELOW_LOW:
-                    color = COLOR_TEMP_COLD;
-                    state = "LOW";
-                    break;
-                case AlarmState::ABOVE_HIGH:
-                    color = COLOR_TEMP_ALERT;
-                    state = "HIGH";
-                    break;
-                case AlarmState::SENSOR_ERROR:
-                    color = COLOR_TEMP_ALERT;
-                    state = "ERR";
-                    break;
-                default:
-                    color = COLOR_TEXT;
-                    state = "?";
-            }
-            
-            sprite.setTextColor(color);
-            sprite.drawString(name, 5, y, 2);
-            
-            char tempStr[20];
-            if (data->temperature > TEMP_INVALID + 1) {
-                snprintf(tempStr, sizeof(tempStr), "%.1fC %s", data->temperature, state);
-            } else {
-                snprintf(tempStr, sizeof(tempStr), "--- %s", state);
-            }
-            
-            sprite.setTextDatum(TR_DATUM);
-            sprite.drawString(tempStr, DISPLAY_WIDTH - 5, y, 2);
-            sprite.setTextDatum(TL_DATUM);
-            
-            y += 20;
         }
     }
     
     if (alertCount == 0) {
-        sprite.setTextColor(COLOR_TEMP_OK);
         sprite.setTextDatum(MC_DATUM);
-        sprite.drawString("All OK", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2, 4);
-        sprite.setTextDatum(TL_DATUM);
+        sprite.setTextColor(COLOR_TEMP_OK, COLOR_BG);
+        sprite.drawString("All Normal", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2, 4);
+        return;
     }
-}
-
-void DisplayManager::drawInfoPage() {
-    drawHeader("Device Info");
     
-    uint8_t y = 28;
-    const SystemConfig& sysConfig = configManager.getSystemConfig();
+    // Show alerts
+    int16_t y = 26;
+    int16_t lineHeight = 28;
+    uint8_t shown = 0;
     
-    sprite.setTextColor(COLOR_TEXT);
+    for (uint8_t i = 0; i < sensorManager->getSensorCount() && shown < 3; i++) {
+        const SensorData* sensor = sensorManager->getSensorData(i);
+        if (sensor == nullptr || sensor->alarmState == AlarmState::NORMAL) continue;
+        
+        // Get sensor name
+        String sensorName = String("Sensor ") + String(i + 1);
+        const SensorConfig* cfg = configManager.getSensorConfigByAddress(sensor->addressStr);
+        if (cfg != nullptr) {
+            sensorName = cfg->name;
+        }
+        
+        // Truncate name
+        if (sensorName.length() > 10) {
+            sensorName = sensorName.substring(0, 8) + "..";
+        }
+        
+        // Draw alert
+        sprite.setTextDatum(TL_DATUM);
+        uint16_t alertColor = getAlarmColor(sensor->alarmState);
+        sprite.setTextColor(alertColor, COLOR_BG);
+        sprite.drawString(sensorName.c_str(), 8, y, 2);
+        
+        sprite.setTextDatum(TR_DATUM);
+        const char* alertText = "";
+        switch (sensor->alarmState) {
+            case AlarmState::ABOVE_HIGH: alertText = "HIGH!"; break;
+            case AlarmState::BELOW_LOW: alertText = "LOW!"; break;
+            case AlarmState::SENSOR_ERROR: alertText = "ERROR"; break;
+            default: alertText = "???"; break;
+        }
+        sprite.drawString(alertText, DISPLAY_WIDTH - 8, y, 2);
+        
+        y += lineHeight;
+        shown++;
+    }
     
-    // Device name
-    sprite.drawString("Name:", 10, y, 2);
-    sprite.setTextColor(COLOR_HEADER);
-    sprite.drawString(sysConfig.deviceName, 70, y, 2);
-    y += 20;
-    
-    // Firmware version
-    sprite.setTextColor(COLOR_TEXT);
-    sprite.drawString("FW:", 10, y, 2);
-    sprite.drawString(FIRMWARE_VERSION, 70, y, 2);
-    y += 20;
-    
-    // Free heap
-    sprite.drawString("Heap:", 10, y, 2);
-    char heapStr[15];
-    snprintf(heapStr, sizeof(heapStr), "%d KB", ESP.getFreeHeap() / 1024);
-    sprite.drawString(heapStr, 70, y, 2);
-    y += 20;
-    
-    // Uptime
-    sprite.drawString("Up:", 10, y, 2);
-    uint32_t uptime = millis() / 1000;
-    uint32_t hours = uptime / 3600;
-    uint32_t mins = (uptime % 3600) / 60;
-    char uptimeStr[15];
-    snprintf(uptimeStr, sizeof(uptimeStr), "%dh %dm", hours, mins);
-    sprite.drawString(uptimeStr, 70, y, 2);
+    // Show count if more alerts - position above bottom bar
+    if (alertCount > 3) {
+        sprite.setTextDatum(MC_DATUM);
+        sprite.setTextColor(COLOR_TEMP_WARN, COLOR_BG);
+        char moreStr[16];
+        snprintf(moreStr, sizeof(moreStr), "+%d more", alertCount - 3);
+        sprite.drawString(moreStr, DISPLAY_WIDTH/2, DISPLAY_HEIGHT - 28, 2);
+    }
+#endif
 }
 
 uint16_t DisplayManager::getTemperatureColor(float temp, float low, float high) {
-    if (temp < low) {
-        return COLOR_TEMP_COLD;
-    } else if (temp > high) {
-        return COLOR_TEMP_ALERT;
-    } else if (temp > high - 5.0f || temp < low + 5.0f) {
-        return COLOR_TEMP_WARN;
-    }
+    if (temp < low) return COLOR_TEMP_COLD;
+    if (temp > high) return COLOR_TEMP_ALERT;
+    if (temp > high - 5) return COLOR_TEMP_WARN;  // Warning zone 5° before high
     return COLOR_TEMP_OK;
 }
 
-#endif // USE_DISPLAY
+uint16_t DisplayManager::getAlarmColor(AlarmState state) {
+    switch (state) {
+        case AlarmState::ABOVE_HIGH: return COLOR_TEMP_ALERT;
+        case AlarmState::BELOW_LOW: return COLOR_TEMP_COLD;
+        case AlarmState::SENSOR_ERROR: return COLOR_TEMP_WARN;
+        default: return COLOR_TEMP_OK;
+    }
+}

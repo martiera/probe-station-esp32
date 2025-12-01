@@ -42,6 +42,8 @@ static bool ledState = false;
 #ifdef USE_DISPLAY
 static uint32_t lastButton1State = HIGH;
 static uint32_t lastButton2State = HIGH;
+static uint32_t button1PressTime = 0;
+static const uint32_t LONG_PRESS_TIME = 800;  // 800ms for long press
 #endif
 
 // ============================================================================
@@ -373,9 +375,21 @@ void loop() {
     bool button1 = digitalRead(BUTTON_1_PIN);
     bool button2 = digitalRead(BUTTON_2_PIN);
     
+    // BTN1: short press = next sensor, long press = toggle auto-rotate
     if (button1 == LOW && lastButton1State == HIGH) {
-        displayManager.handleButton1();
+        // Button just pressed - record time
+        button1PressTime = millis();
+    } else if (button1 == HIGH && lastButton1State == LOW) {
+        // Button released - check duration
+        uint32_t pressDuration = millis() - button1PressTime;
+        if (pressDuration >= LONG_PRESS_TIME) {
+            displayManager.handleButton1LongPress();
+        } else {
+            displayManager.handleButton1();
+        }
     }
+    
+    // BTN2: simple press = next page
     if (button2 == LOW && lastButton2State == HIGH) {
         displayManager.handleButton2();
     }

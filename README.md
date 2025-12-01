@@ -13,6 +13,36 @@ A professional-grade temperature monitoring solution for heating and hot water p
 - **Min/Max Display**: Dashboard shows coldest and hottest sensors with names
 - **Temperature History**: Track temperature trends over time
 
+### TFT Display Interface
+
+The 1.14" TFT display provides a clean, readable interface with 4 pages:
+
+| Page | Description | BTN1 Action |
+|------|-------------|-------------|
+| **FOCUS** | Single sensor with large temperature (48px) | `[SENSOR]` - Next sensor |
+| **SENSORS** | List view showing 2 sensors per screen | `[SCROLL]` - Scroll list |
+| **STATUS** | WiFi IP, MQTT status, uptime | - |
+| **ALERTS** | Active alarms or "All Normal" | - |
+
+**Button Controls:**
+- **BTN1 (Top)**: Short press = action shown in top-right bracket
+- **BTN1 Long Press**: Toggle AUTO/MANUAL mode on FOCUS page
+- **BTN2 (Bottom)**: Next page (indicated by `>>` symbol)
+
+**Status Bar (Top):**
+- Left: WiFi status ("WiFi" or "AP")
+- Center: Page name (FOCUS-A/FOCUS-M, SENSORS, STATUS, ALERTS)
+- Right: Context action `[SENSOR]` or `[SCROLL]`
+- Bar color: Green=normal, Red=high alarm, Blue=low alarm, Orange=sensor error
+
+**Footer:**
+- Center: Page indicator dots (● ○ ○ ○)
+- Right: Navigation arrow `>>`
+
+**FOCUS Page Modes:**
+- **AUTO (FOCUS-A)**: Automatically cycles through sensors every 4 seconds
+- **MANUAL (FOCUS-M)**: Stays on selected sensor until you press BTN1
+
 ### Connectivity
 - **WiFi Manager**: Auto-connect to configured network or create Access Point for setup
 - **Async WiFi Scanning**: Non-blocking network scanning prevents device reboots
