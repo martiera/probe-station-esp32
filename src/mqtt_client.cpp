@@ -22,7 +22,8 @@ MQTTClient::MQTTClient() :
     _lastConnectAttempt(0),
     _lastPublishTime(0),
     _publishCount(0),
-    _haDiscoveryPublished(false) {
+    _haDiscoveryPublished(false),
+    _reconnectRequested(false) {
     _lastError[0] = '\0';
     
     for (uint8_t i = 0; i < MAX_SENSORS; i++) {
@@ -51,6 +52,16 @@ void MQTTClient::update() {
         return;
     }
     
+    // Handle reconnect request from web handlers (thread-safe)
+    if (_reconnectRequested) {
+        _reconnectRequested = false;
+        _lastConnectAttempt = 0;
+        _haDiscoveryPublished = false;
+        if (_client.connected()) {
+            _client.disconnect();
+        }
+    }
+    
     // Check WiFi connection
     if (!wifiManager.isConnected()) {
         return;
@@ -76,13 +87,19 @@ void MQTTClient::update() {
         _haDiscoveryPublished = true;
     }
     
-    // Periodic temperature publishing
+    // Publish temperatures (only when changed if publishOnChange is enabled)
     const MQTTConfig& config = configManager.getMQTTConfig();
-    uint32_t publishInterval = config.publishInterval * 1000;
     
-    if (now - _lastPublishTime >= publishInterval) {
+    if (config.publishOnChange) {
+        // Publish on every sensor read cycle (will only publish if temp changed)
         publishTemperatures();
-        _lastPublishTime = now;
+    } else {
+        // Fallback to interval-based publishing if publishOnChange is disabled
+        uint32_t publishInterval = config.publishInterval * 1000;
+        if (now - _lastPublishTime >= publishInterval) {
+            publishTemperatures();
+            _lastPublishTime = now;
+        }
     }
 }
 
@@ -92,12 +109,9 @@ bool MQTTClient::isEnabled() const {
 }
 
 void MQTTClient::reconnect() {
-    _lastConnectAttempt = 0;
-    _haDiscoveryPublished = false;
-    
-    if (_client.connected()) {
-        _client.disconnect();
-    }
+    // Just set flag - actual reconnect happens in update() on main loop
+    // This is safe to call from async web handlers
+    _reconnectRequested = true;
 }
 
 void MQTTClient::disconnect() {

@@ -25,6 +25,7 @@ WiFiManager::WiFiManager() :
     _scanResults(-1),
     _scanComplete(false),
     _scanInProgress(false),
+    _reconnectRequested(false),
     _dnsServer(nullptr),
     _stateCallback(nullptr) {
 }
@@ -55,6 +56,15 @@ void WiFiManager::begin() {
 }
 
 void WiFiManager::update() {
+    // Handle reconnect request from web handlers (thread-safe)
+    if (_reconnectRequested) {
+        _reconnectRequested = false;
+        _connectAttempts = 0;
+        _lastConnectAttempt = 0;
+        attemptConnection();
+        return;  // Let next update cycle handle the rest
+    }
+    
     // Process DNS requests for captive portal
     if (_dnsServer) {
         _dnsServer->processNextRequest();
@@ -265,9 +275,9 @@ void WiFiManager::stopAP() {
 }
 
 void WiFiManager::reconnect() {
-    _connectAttempts = 0;
-    _lastConnectAttempt = 0;
-    attemptConnection();
+    // Just set flag - actual reconnect happens in update() on main loop
+    // This is safe to call from async web handlers
+    _reconnectRequested = true;
 }
 
 int16_t WiFiManager::scanNetworks() {

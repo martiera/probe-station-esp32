@@ -208,8 +208,8 @@ void SensorManager::readTemperatures() {
 void SensorManager::update() {
     uint32_t now = millis();
     
-    // Periodic sensor discovery
-    if (_rescanRequested || (now - _lastDiscoveryTime >= SENSOR_DISCOVERY_INTERVAL)) {
+    // Manual sensor discovery only (via rescan button)
+    if (_rescanRequested) {
         discoverSensors();
     }
     

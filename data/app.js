@@ -55,7 +55,10 @@ let otaPollTimer = null;
 document.addEventListener('DOMContentLoaded', () => {
     initTabs();
     connectWebSocket();
-    loadStatus();
+    loadStatus().then(() => {
+        // Restore collapsed states after status is loaded
+        restoreCollapsedStates();
+    });
     loadConfigurations();
     loadOtaInfo();
     
@@ -189,25 +192,46 @@ async function loadOtaStatus() {
 // ============================================================================
 
 function initTabs() {
+    // Get tabs from both desktop nav and mobile nav
     const tabs = document.querySelectorAll('.tab');
     
     tabs.forEach(tab => {
         tab.addEventListener('click', () => {
-            // Update tab buttons
-            tabs.forEach(t => t.classList.remove('active'));
-            tab.classList.add('active');
+            const tabId = tab.dataset.tab;
             
-            // Update tab content
-            document.querySelectorAll('.tab-content').forEach(content => {
-                content.classList.remove('active');
+            // Update ALL tab buttons (both desktop and mobile)
+            tabs.forEach(t => {
+                if (t.dataset.tab === tabId) {
+                    t.classList.add('active');
+                } else {
+                    t.classList.remove('active');
+                }
             });
             
-            const tabId = tab.dataset.tab;
-            document.getElementById(`tab-${tabId}`).classList.add('active');
-            
-            // Load tab-specific data
-            if (tabId === 'settings') {
-                scanWifi();
+            // Fade out current content
+            const currentContent = document.querySelector('.tab-content.active');
+            if (currentContent) {
+                currentContent.style.opacity = '0';
+                currentContent.style.transform = 'translateY(10px)';
+                
+                setTimeout(() => {
+                    currentContent.classList.remove('active');
+                    
+                    // Fade in new content
+                    const newContent = document.getElementById(`tab-${tabId}`);
+                    newContent.classList.add('active');
+                    
+                    // Trigger reflow
+                    newContent.offsetHeight;
+                    
+                    newContent.style.opacity = '1';
+                    newContent.style.transform = 'translateY(0)';
+                    
+                    // Scroll to top on mobile
+                    if (window.innerWidth < 768) {
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }
+                }, 150);
             }
         });
     });
@@ -338,9 +362,6 @@ async function loadStatus() {
 
 function updateStatusDisplay() {
     if (!systemStatus) return;
-    
-    // Device name
-    document.getElementById('deviceName').textContent = systemStatus.device.name;
     
     // WiFi status
     const wifiStatus = document.getElementById('wifiStatus');
@@ -794,6 +815,7 @@ function populateMqttForm(config) {
     document.getElementById('mqttPort').value = config.port || 1883;
     document.getElementById('mqttUser').value = config.username || '';
     document.getElementById('mqttTopic').value = config.topicPrefix || 'tempmonitor';
+    document.getElementById('mqttPublishOnChange').checked = config.publishOnChange !== undefined ? config.publishOnChange : true;
     document.getElementById('mqttInterval').value = config.publishInterval || 10;
 }
 
@@ -805,6 +827,7 @@ async function saveMqttConfig() {
         username: document.getElementById('mqttUser').value,
         password: document.getElementById('mqttPassword').value,
         topicPrefix: document.getElementById('mqttTopic').value,
+        publishOnChange: document.getElementById('mqttPublishOnChange').checked,
         publishInterval: parseInt(document.getElementById('mqttInterval').value)
     };
     
@@ -874,6 +897,38 @@ async function factoryReset() {
 
 function openSettings() {
     document.querySelector('.tab[data-tab="settings"]').click();
+}
+
+function toggleCollapse(header) {
+    const section = header.closest('.section');
+    section.classList.toggle('collapsed');
+}
+
+// Set collapsed states based on connection status
+function restoreCollapsedStates() {
+    document.querySelectorAll('.section.collapsible').forEach(section => {
+        const header = section.querySelector('.section-header.clickable h2');
+        if (header) {
+            const sectionTitle = header.textContent;
+            
+            // WiFi: collapse if connected, expand if not connected
+            if (sectionTitle.includes('WiFi')) {
+                if (systemStatus?.wifi?.status === 'connected') {
+                    section.classList.add('collapsed');
+                } else {
+                    section.classList.remove('collapsed');
+                }
+            }
+            // MQTT: collapse if connected OR if disabled (don't need to configure it)
+            else if (sectionTitle.includes('MQTT')) {
+                if (systemStatus?.mqtt?.connected || !systemStatus?.mqtt?.enabled) {
+                    section.classList.add('collapsed');
+                } else {
+                    section.classList.remove('collapsed');
+                }
+            }
+        }
+    });
 }
 
 // ============================================================================

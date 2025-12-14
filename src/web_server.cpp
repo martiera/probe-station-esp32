@@ -423,7 +423,10 @@ void WebServer::handleUpdateSensor(AsyncWebServerRequest* request, uint8_t senso
     }
     
     configManager.markDirty();
-    configManager.save();
+    if (!configManager.save()) {
+        sendError(request, 500, "Failed to save configuration");
+        return;
+    }
     
     sendSuccess(request, "Sensor updated");
 }
@@ -479,12 +482,16 @@ void WebServer::handleUpdateWiFiConfig(AsyncWebServerRequest* request,
         strncpy(config.dns, doc["dns"] | "", 15);
     }
     
-    configManager.save();
+    if (!configManager.save()) {
+        sendError(request, 500, "Failed to save configuration");
+        return;
+    }
     
-    // Trigger WiFi reconnection
-    wifiManager.reconnect();
-    
+    // Send response before triggering reconnect
     sendSuccess(request, "WiFi configuration updated. Reconnecting...");
+    
+    // Request reconnection (handled safely in main loop)
+    wifiManager.reconnect();
 }
 
 void WebServer::handleGetMQTTConfig(AsyncWebServerRequest* request) {
@@ -546,12 +553,16 @@ void WebServer::handleUpdateMQTTConfig(AsyncWebServerRequest* request,
         config.publishInterval = doc["publishInterval"];
     }
     
-    configManager.save();
+    if (!configManager.save()) {
+        sendError(request, 500, "Failed to save configuration");
+        return;
+    }
     
-    // Trigger MQTT reconnection
-    mqttClient.reconnect();
-    
+    // Send response before triggering reconnect
     sendSuccess(request, "MQTT configuration updated");
+    
+    // Request reconnection (handled safely in main loop)
+    mqttClient.reconnect();
 }
 
 void WebServer::handleGetSystemConfig(AsyncWebServerRequest* request) {
@@ -597,7 +608,10 @@ void WebServer::handleUpdateSystemConfig(AsyncWebServerRequest* request,
         config.otaEnabled = doc["otaEnabled"];
     }
     
-    configManager.save();
+    if (!configManager.save()) {
+        sendError(request, 500, "Failed to save configuration");
+        return;
+    }
     
     sendSuccess(request, "System configuration updated");
 }
@@ -704,7 +718,11 @@ void WebServer::handleCalibrateSensor(AsyncWebServerRequest* request, uint8_t se
     
     float refTemp = doc["referenceTemp"];
     sensorManager.calibrateSensor(sensorIndex, refTemp);
-    configManager.save();
+    
+    if (!configManager.save()) {
+        sendError(request, 500, "Failed to save configuration");
+        return;
+    }
     
     sendSuccess(request, "Sensor calibrated");
 }
@@ -722,7 +740,12 @@ void WebServer::handleReboot(AsyncWebServerRequest* request) {
 
 void WebServer::handleFactoryReset(AsyncWebServerRequest* request) {
     configManager.resetToDefaults();
-    configManager.save();
+    
+    if (!configManager.save()) {
+        sendError(request, 500, "Failed to save configuration");
+        return;
+    }
+    
     sendSuccess(request, "Factory reset complete. Rebooting...");
     delay(1000);
     ESP.restart();

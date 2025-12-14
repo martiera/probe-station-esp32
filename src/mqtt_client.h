@@ -128,6 +128,7 @@ private:
     float _lastPublishedTemp[MAX_SENSORS];
     char _lastError[64];
     bool _haDiscoveryPublished;
+    volatile bool _reconnectRequested;
     
     /**
      * Attempt to connect to MQTT broker

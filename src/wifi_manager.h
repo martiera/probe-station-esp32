@@ -205,6 +205,7 @@ private:
     int16_t _scanResults;
     bool _scanComplete;
     bool _scanInProgress;
+    volatile bool _reconnectRequested;
     
     // Captive portal DNS server
     DNSServer* _dnsServer;
