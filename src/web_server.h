@@ -52,6 +52,11 @@ public:
      */
     void sendNotification(const char* type, const char* message);
     
+    /**
+     * Set OTA mode - closes all WebSocket connections to free memory
+     */
+    void setOtaMode(bool enabled);
+    
 private:
     AsyncWebServer _server;
     AsyncWebSocket _ws;

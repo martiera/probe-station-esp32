@@ -108,6 +108,16 @@ void WebServer::sendNotification(const char* type, const char* message) {
     _ws.textAll(buffer);
 }
 
+void WebServer::setOtaMode(bool enabled) {
+    if (enabled) {
+        // Close all WebSocket connections to free memory
+        _ws.closeAll();
+        Serial.printf("[WebServer] OTA mode enabled, WebSocket closed. Heap: %u\n", ESP.getFreeHeap());
+    } else {
+        Serial.printf("[WebServer] OTA mode disabled. Heap: %u\n", ESP.getFreeHeap());
+    }
+}
+
 // ============================================================================
 // Route Setup
 // ============================================================================

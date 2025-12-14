@@ -1,6 +1,8 @@
 /*
  * ESP32 Temperature Monitoring System
  * GitHub Releases OTA Manager
+ * 
+ * Uses WiFiClientSecure + ESP-IDF OTA APIs for memory-efficient HTTPS OTA
  */
 
 #include "ota_manager.h"
@@ -8,7 +10,6 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <Update.h>
-#include <HTTPUpdate.h>
 #include <ArduinoJson.h>
 #include <cstring>
 #include <esp_ota_ops.h>
@@ -16,6 +17,8 @@
 
 #include "config.h"
 #include "mqtt_client.h"
+#include "web_server.h"
+#include "display_manager.h"
 
 OTAManager otaManager;
 
@@ -24,13 +27,157 @@ constexpr uint32_t RELEASE_INFO_TTL_MS = 5UL * 60UL * 1000UL; // 5 min
 constexpr uint32_t AUTO_CHECK_INTERVAL_MS = 24UL * 60UL * 60UL * 1000UL; // 24 hours
 constexpr uint32_t HTTP_TIMEOUT_MS = 15000;
 
+// URL parsing helper (from ESP_OTA_GitHub approach)
+struct UrlDetails {
+    String proto;
+    String host;
+    int port;
+    String path;
+};
+
+UrlDetails parseUrl(const String& url) {
+    UrlDetails details;
+    String u = url;
+    
+    if (u.startsWith("http://")) {
+        details.proto = "http://";
+        details.port = 80;
+        u.replace("http://", "");
+    } else {
+        details.proto = "https://";
+        details.port = 443;
+        u.replace("https://", "");
+    }
+    
+    int firstSlash = u.indexOf('/');
+    if (firstSlash > 0) {
+        details.host = u.substring(0, firstSlash);
+        details.path = u.substring(firstSlash);
+    } else {
+        details.host = u;
+        details.path = "/";
+    }
+    
+    return details;
+}
+
+// Resolve GitHub redirects using raw socket connection (memory efficient)
+// This follows the ESP_OTA_GitHub approach but with heap allocation
+bool resolveRedirects(const String& startUrl, String& finalUrl, String& error) {
+    finalUrl = startUrl;
+    
+    for (int redirectCount = 0; redirectCount < 10; redirectCount++) {
+        UrlDetails url = parseUrl(finalUrl);
+        
+        Serial.printf("[OTA] Redirect %d: %s%s%s\n", redirectCount + 1, 
+            url.proto.c_str(), url.host.c_str(), url.path.c_str());
+        Serial.printf("[OTA] Free heap before connect: %u\n", ESP.getFreeHeap());
+        
+        // Allocate on heap to avoid stack overflow
+        WiFiClientSecure* client = new WiFiClientSecure();
+        if (!client) {
+            error = "Out of memory for SSL client";
+            return false;
+        }
+        
+        client->setInsecure(); // Skip certificate validation to save memory
+        client->setTimeout(30); // 30 second timeout
+        
+        Serial.printf("[OTA] Connecting to %s:%d...\n", url.host.c_str(), url.port);
+        
+        if (!client->connect(url.host.c_str(), url.port)) {
+            error = "Connection to " + url.host + " failed";
+            delete client;
+            return false;
+        }
+        
+        Serial.println("[OTA] Connected, sending request...");
+        
+        // Send minimal HTTP request
+        client->print(String("GET ") + url.path + " HTTP/1.1\r\n" +
+                     "Host: " + url.host + "\r\n" +
+                     "User-Agent: probe-station-esp32\r\n" +
+                     "Connection: close\r\n\r\n");
+        
+        bool foundLocation = false;
+        String newLocation;
+        int httpCode = 0;
+        
+        // Read headers only
+        uint32_t timeout = millis() + 30000;
+        while (client->connected() && millis() < timeout) {
+            String line = client->readStringUntil('\n');
+            line.trim();
+            
+            // Check HTTP status first
+            if (line.startsWith("HTTP/1.")) {
+                int spacePos = line.indexOf(' ');
+                if (spacePos > 0) {
+                    httpCode = line.substring(spacePos + 1, spacePos + 4).toInt();
+                    Serial.printf("[OTA] HTTP status: %d\n", httpCode);
+                }
+            }
+            
+            // Check for Location header (case-insensitive)
+            if (line.startsWith("Location: ") || line.startsWith("location: ")) {
+                newLocation = line.substring(10);
+                newLocation.trim();
+                foundLocation = true;
+                Serial.printf("[OTA] Found Location: %s\n", newLocation.c_str());
+            }
+            
+            // Empty line means end of headers
+            if (line.length() == 0) {
+                break;
+            }
+        }
+        
+        client->stop();
+        delete client;
+        client = nullptr;
+        
+        Serial.printf("[OTA] Free heap after disconnect: %u\n", ESP.getFreeHeap());
+        
+        // Check if we got a success code (final URL)
+        if (httpCode == 200 || httpCode == 206) {
+            Serial.printf("[OTA] Final URL reached (HTTP %d)\n", httpCode);
+            return true;
+        }
+        
+        // Check for redirect
+        if (httpCode >= 300 && httpCode < 400 && foundLocation && newLocation.length() > 0) {
+            // Handle relative vs absolute URLs
+            if (newLocation.startsWith("http://") || newLocation.startsWith("https://")) {
+                finalUrl = newLocation;
+            } else {
+                // Relative URL - same host
+                finalUrl = url.proto + url.host + newLocation;
+            }
+            Serial.printf("[OTA] Redirecting to: %s\n", finalUrl.c_str());
+            delay(500); // Delay between redirects to allow memory cleanup
+            continue;
+        }
+        
+        // Not a redirect and not success
+        if (httpCode > 0) {
+            error = "HTTP " + String(httpCode);
+        } else {
+            error = "No HTTP response";
+        }
+        return false;
+    }
+    
+    error = "Too many redirects";
+    return false;
+}
+
 String normalizeTagToVersion(String tag) {
     tag.trim();
     if (tag.startsWith("refs/tags/")) tag = tag.substring(strlen("refs/tags/"));
     if (tag.startsWith("v")) return tag;
-    // allow bare semver; we still want v-prefix for consistency
     return "v" + tag;
 }
+
 String githubApiLatestReleaseUrl() {
     String url = "https://api.github.com/repos/";
     url += GITHUB_OWNER;
@@ -113,7 +260,8 @@ bool httpGetToString(const String& url, String& out, String& error, size_t maxBy
     }
     return true;
 }
-}
+
+} // namespace
 
 OTAManager::OTAManager() : _mux(portMUX_INITIALIZER_UNLOCKED), _task(nullptr) {
     _releaseMutex = xSemaphoreCreateMutex();
@@ -131,7 +279,6 @@ void OTAManager::getReleaseInfoCopy(OTAReleaseInfo& out) const {
         xSemaphoreGive(_releaseMutex);
         return;
     }
-    // If mutex can't be acquired quickly, return an empty snapshot.
     out = OTAReleaseInfo{};
 }
 
@@ -168,30 +315,25 @@ bool OTAManager::isBusy() const {
 OTAPartitionInfo OTAManager::getPartitionInfo() {
     OTAPartitionInfo info;
     
-    // Get OTA partition size
     const esp_partition_t* ota_partition = esp_ota_get_next_update_partition(NULL);
     if (ota_partition) {
         info.firmwarePartitionSize = ota_partition->size;
     }
     
-    // Get SPIFFS partition size
     const esp_partition_t* spiffs_partition = esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
     if (spiffs_partition) {
         info.spiffsPartitionSize = spiffs_partition->size;
     }
     
-    // Get current firmware size (running partition)
     const esp_partition_t* running = esp_ota_get_running_partition();
     if (running) {
         esp_app_desc_t app_desc;
         if (esp_ota_get_partition_description(running, &app_desc) == ESP_OK) {
-            // App descriptor doesn't have size, use partition size as max
             info.currentFirmwareSize = running->size;
         }
     }
     
-    // Get heap info
     info.freeHeap = ESP.getFreeHeap();
     info.minFreeHeap = ESP.getMinFreeHeap();
     
@@ -199,29 +341,24 @@ OTAPartitionInfo OTAManager::getPartitionInfo() {
 }
 
 void OTAManager::update() {
-    // Perform automatic background check every 24 hours
     uint32_t now = millis();
     
-    // Skip if never checked (wait for first manual check or page load)
     if (_lastAutoCheck == 0) {
-        _lastAutoCheck = now; // Initialize timer
+        _lastAutoCheck = now;
         return;
     }
     
-    // Check if 24 hours have passed
     if (now - _lastAutoCheck < AUTO_CHECK_INTERVAL_MS) {
         return;
     }
     
-    // Don't check if already busy
     if (isBusy()) {
         return;
     }
     
-    // Trigger background check
     _lastAutoCheck = now;
     String err;
-    ensureReleaseInfoFresh(true, err); // Force check to bypass cache
+    ensureReleaseInfoFresh(true, err);
     
     if (err.length() > 0) {
         Serial.printf("[OTA] Auto-check failed: %s\n", err.c_str());
@@ -231,19 +368,16 @@ void OTAManager::update() {
 }
 
 bool OTAManager::ensureReleaseInfoFresh(bool force, String& error) {
-    // Don't start a check while an update is running.
     OTAProgress p = getProgress();
     if (p.state == OTAState::UPDATING_FIRMWARE || p.state == OTAState::UPDATING_SPIFFS || p.state == OTAState::REBOOTING) {
         error = "OTA busy";
         return false;
     }
 
-    // Already checking
     if (p.state == OTAState::CHECKING) {
         return true;
     }
 
-    // If we have fresh info and not forced, nothing to do.
     uint32_t fetchedAt = 0;
     if (_releaseMutex && xSemaphoreTake(_releaseMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         fetchedAt = _release.fetchedAtMs;
@@ -253,13 +387,11 @@ bool OTAManager::ensureReleaseInfoFresh(bool force, String& error) {
         return true;
     }
 
-    // Start background check task
     if (_checkTask != nullptr) {
         return true;
     }
 
     setProgress(OTAState::CHECKING, 0, "Checking GitHub releases...");
-    // Pin to core 0 to avoid starving AsyncTCP (typically pinned to core 1).
     BaseType_t ok = xTaskCreatePinnedToCore(checkThunk, "ota_check", 8192, this, 1, &_checkTask, 0);
     if (ok != pdPASS) {
         _checkTask = nullptr;
@@ -292,7 +424,6 @@ void OTAManager::runCheckTask(bool force) {
 
     Serial.printf("[OTA] Found release: %s\n", next.tag.c_str());
 
-    // Only fetch README if release body is empty (saves ~20s HTTPS fetch)
     if (next.body.length() == 0) {
         String readmeErr;
         fetchReadmeForTag(next, next.tag, readmeErr);
@@ -310,13 +441,11 @@ void OTAManager::runCheckTask(bool force) {
 }
 
 bool OTAManager::fetchLatestReleaseFromGitHub(OTAReleaseInfo& into, String& error) {
-    // Read into a bounded string with yields to avoid starving AsyncTCP/loop WDT.
     String payload;
     if (!httpGetToString(githubApiLatestReleaseUrl(), payload, error, 32 * 1024)) {
         return false;
     }
 
-    // Parse only what we need
     JsonDocument filter;
     filter["tag_name"] = true;
     filter["name"] = true;
@@ -373,56 +502,279 @@ bool OTAManager::downloadAndApply(const String& url, int updateCommand, const ch
     Serial.printf("[OTA] %s: Starting download from %s\n", label, url.c_str());
     Serial.printf("[OTA] %s: Free heap: %u bytes\n", label, ESP.getFreeHeap());
     
-    WiFiClientSecure client;
-    client.setInsecure(); // Skip certificate verification
-    client.setTimeout(120); // 2 minute socket timeout for large files
+    // For SPIFFS, use dedicated function
+    if (updateCommand == U_SPIFFS) {
+        return downloadAndApplySPIFFS(url, label, error);
+    }
     
-    // Set up progress callback
-    int lastReportedPct = -1;
-    Update.onProgress([this, label, &lastReportedPct](size_t done, size_t total) {
-        if (total > 0) {
-            int pct = (done * 100) / total;
-            if (pct != lastReportedPct) {
-                lastReportedPct = pct;
-                char msg[64];
-                snprintf(msg, sizeof(msg), "%s: %d%%", label, pct);
-                setProgress(getProgress().state, pct, msg);
-                if (pct % 10 == 0) {
-                    Serial.printf("[OTA] %s: %d%% (%u / %u bytes)\n", label, pct, done, total);
-                }
+    // For firmware: Use WiFiClientSecure + ESP-IDF OTA APIs for maximum memory efficiency
+    // This streams directly to flash in small chunks
+    OTAState progressState = OTAState::UPDATING_FIRMWARE;
+    
+    // Get the OTA partition before starting
+    const esp_partition_t* update_partition = esp_ota_get_next_update_partition(nullptr);
+    if (!update_partition) {
+        error = String(label) + ": No OTA partition found";
+        return false;
+    }
+    Serial.printf("[OTA] %s: Target partition: %s (size: %u)\n", 
+        label, update_partition->label, update_partition->size);
+    
+    // Allocate SSL client on heap
+    WiFiClientSecure* client = new WiFiClientSecure();
+    if (!client) {
+        error = String(label) + ": Out of memory for SSL client";
+        return false;
+    }
+    
+    // Configure for minimal memory usage
+    client->setInsecure();  // Skip certificate validation
+    client->setTimeout(60); // 60 second timeout
+    client->setHandshakeTimeout(30); // 30 second handshake timeout
+    
+    Serial.printf("[OTA] %s: Free heap after SSL client setup: %u\n", label, ESP.getFreeHeap());
+    
+    // Use HTTPClient for redirect handling
+    HTTPClient http;
+    http.setTimeout(60000);
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.setReuse(false);
+    
+    Serial.printf("[OTA] %s: Connecting...\n", label);
+    Serial.printf("[OTA] %s: Free heap before connect: %u\n", label, ESP.getFreeHeap());
+    
+    if (!http.begin(*client, url)) {
+        error = String(label) + ": HTTP begin failed";
+        delete client;
+        return false;
+    }
+    
+    http.addHeader("User-Agent", "probe-station-esp32");
+    http.addHeader("Accept", "application/octet-stream");
+    
+    Serial.printf("[OTA] %s: Sending GET request...\n", label);
+    int httpCode = http.GET();
+    Serial.printf("[OTA] %s: HTTP response: %d, free heap: %u\n", label, httpCode, ESP.getFreeHeap());
+    
+    if (httpCode != HTTP_CODE_OK) {
+        if (httpCode <= 0) {
+            char errBuf[128];
+            int sslErr = client->lastError(errBuf, sizeof(errBuf));
+            error = String(label) + ": HTTP " + String(httpCode) + " - " + http.errorToString(httpCode);
+            if (sslErr != 0) {
+                error += String(" (SSL: ") + String(errBuf) + ")";
+            }
+        } else {
+            error = String(label) + ": HTTP " + String(httpCode);
+        }
+        http.end();
+        delete client;
+        return false;
+    }
+    
+    int contentLength = http.getSize();
+    Serial.printf("[OTA] %s: Content-Length: %d bytes\n", label, contentLength);
+    
+    if (contentLength <= 0) {
+        error = String(label) + ": Invalid content length";
+        http.end();
+        delete client;
+        return false;
+    }
+    
+    if ((size_t)contentLength > update_partition->size) {
+        error = String(label) + ": Firmware too large for partition";
+        http.end();
+        delete client;
+        return false;
+    }
+    
+    // Initialize ESP-IDF OTA
+    esp_ota_handle_t ota_handle;
+    esp_err_t err = esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &ota_handle);
+    if (err != ESP_OK) {
+        error = String(label) + ": esp_ota_begin failed: " + String(esp_err_to_name(err));
+        http.end();
+        delete client;
+        return false;
+    }
+    
+    Serial.printf("[OTA] %s: OTA started, streaming to flash...\n", label);
+    
+    // Stream directly to flash in small chunks
+    constexpr size_t CHUNK_SIZE = 1024;  // Small chunks to minimize RAM
+    uint8_t buffer[CHUNK_SIZE];
+    size_t totalWritten = 0;
+    int lastProgress = -1;
+    uint32_t lastProgressTime = millis();
+    
+    WiFiClient* stream = http.getStreamPtr();
+    
+    while (totalWritten < (size_t)contentLength) {
+        // Check for timeout (no progress in 30 seconds)
+        if (millis() - lastProgressTime > 30000) {
+            error = String(label) + ": Download timeout";
+            esp_ota_abort(ota_handle);
+            http.end();
+            delete client;
+            return false;
+        }
+        
+        size_t remaining = contentLength - totalWritten;
+        size_t toRead = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
+        
+        int bytesRead = stream->readBytes(buffer, toRead);
+        if (bytesRead <= 0) {
+            // Wait a bit and retry
+            delay(10);
+            continue;
+        }
+        
+        lastProgressTime = millis();  // Reset timeout
+        
+        err = esp_ota_write(ota_handle, buffer, bytesRead);
+        if (err != ESP_OK) {
+            error = String(label) + ": esp_ota_write failed: " + String(esp_err_to_name(err));
+            esp_ota_abort(ota_handle);
+            http.end();
+            delete client;
+            return false;
+        }
+        
+        totalWritten += bytesRead;
+        
+        // Update progress
+        int progress = (totalWritten * 100) / contentLength;
+        if (progress != lastProgress) {
+            lastProgress = progress;
+            setProgress(progressState, progress, "Downloading firmware...");
+            if (progress % 10 == 0) {
+                Serial.printf("[OTA] %s: %d%% (%u/%d bytes), heap: %u\n", 
+                    label, progress, totalWritten, contentLength, ESP.getFreeHeap());
             }
         }
-    });
-    
-    // Use httpUpdate for robust OTA
-    httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    httpUpdate.rebootOnUpdate(false); // We'll handle reboot ourselves
-    
-    t_httpUpdate_return ret;
-    if (updateCommand == U_FLASH) {
-        ret = httpUpdate.update(client, url);
-    } else {
-        ret = httpUpdate.updateSpiffs(client, url);
+        
+        vTaskDelay(1);  // Yield to other tasks
     }
     
-    switch (ret) {
-        case HTTP_UPDATE_FAILED:
-            error = String(label) + ": " + httpUpdate.getLastErrorString();
-            Serial.printf("[OTA] %s: Update failed: %s\n", label, httpUpdate.getLastErrorString().c_str());
-            return false;
-            
-        case HTTP_UPDATE_NO_UPDATES:
-            error = String(label) + ": No updates available";
-            Serial.printf("[OTA] %s: No updates\n", label);
-            return false;
-            
-        case HTTP_UPDATE_OK:
-            Serial.printf("[OTA] %s: Success!\n", label);
-            return true;
+    // Clean up HTTP before finishing OTA
+    http.end();
+    delete client;
+    client = nullptr;
+    
+    Serial.printf("[OTA] %s: Download complete, finalizing...\n", label);
+    
+    // Finish OTA
+    err = esp_ota_end(ota_handle);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_OTA_VALIDATE_FAILED) {
+            error = String(label) + ": Firmware validation failed (bad signature)";
+        } else {
+            error = String(label) + ": esp_ota_end failed: " + String(esp_err_to_name(err));
+        }
+        return false;
     }
     
-    error = String(label) + ": Unknown result";
-    return false;
+    // Set the new partition as boot partition
+    err = esp_ota_set_boot_partition(update_partition);
+    if (err != ESP_OK) {
+        error = String(label) + ": esp_ota_set_boot_partition failed: " + String(esp_err_to_name(err));
+        return false;
+    }
+    
+    Serial.printf("[OTA] %s: Firmware update successful! %u bytes written\n", label, totalWritten);
+    return true;
+}
+
+// SPIFFS update using Arduino Update library (esp_https_ota doesn't support SPIFFS)
+bool OTAManager::downloadAndApplySPIFFS(const String& url, const char* label, String& error) {
+    Serial.printf("[OTA] %s: Starting SPIFFS download from %s\n", label, url.c_str());
+    Serial.printf("[OTA] %s: Free heap: %u bytes\n", label, ESP.getFreeHeap());
+    
+    WiFiClientSecure* client = new WiFiClientSecure();
+    if (!client) {
+        error = String(label) + ": Out of memory for SSL client";
+        return false;
+    }
+    
+    client->setInsecure();
+    client->setTimeout(60);
+    client->setHandshakeTimeout(30);
+    
+    Serial.printf("[OTA] %s: Free heap after SSL client setup: %u\n", label, ESP.getFreeHeap());
+    
+    HTTPClient http;
+    http.setTimeout(60000);
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.setReuse(false);
+    
+    Serial.printf("[OTA] %s: Connecting...\n", label);
+    
+    if (!http.begin(*client, url)) {
+        error = String(label) + ": HTTP begin failed";
+        delete client;
+        return false;
+    }
+    
+    http.addHeader("User-Agent", "probe-station-esp32");
+    
+    Serial.printf("[OTA] %s: Sending GET request...\n", label);;
+    int httpCode = http.GET();
+    Serial.printf("[OTA] %s: HTTP response: %d\n", label, httpCode);
+    
+    if (httpCode != HTTP_CODE_OK) {
+        if (httpCode <= 0) {
+            char errBuf[128];
+            int sslErr = client->lastError(errBuf, sizeof(errBuf));
+            error = String(label) + ": HTTP " + String(httpCode) + " - " + http.errorToString(httpCode);
+            if (sslErr != 0) {
+                error += String(" (SSL: ") + String(errBuf) + ")";
+            }
+        } else {
+            error = String(label) + ": HTTP " + String(httpCode);
+        }
+        http.end();
+        delete client;
+        return false;
+    }
+    
+    int contentLength = http.getSize();
+    Serial.printf("[OTA] %s: Content-Length: %d bytes\n", label, contentLength);
+    
+    if (contentLength <= 0) {
+        error = String(label) + ": Invalid content length";
+        http.end();
+        delete client;
+        return false;
+    }
+    
+    Update.abort();
+    delay(100);
+    
+    if (!Update.begin(contentLength, U_SPIFFS)) {
+        error = String(label) + ": Update.begin failed - " + Update.errorString();
+        http.end();
+        delete client;
+        return false;
+    }
+    
+    size_t written = Update.writeStream(*client);
+    http.end();
+    delete client;
+    
+    if (written != (size_t)contentLength) {
+        error = String(label) + ": Incomplete write (" + String(written) + "/" + String(contentLength) + ")";
+        Update.abort();
+        return false;
+    }
+    
+    if (!Update.end(true)) {
+        error = String(label) + ": Update.end failed - " + Update.errorString();
+        return false;
+    }
+    
+    Serial.printf("[OTA] %s: SPIFFS update successful! %u bytes written\n", label, written);
+    return true;
 }
 
 bool OTAManager::startUpdate(OTATarget target, String& error) {
@@ -431,7 +783,6 @@ bool OTAManager::startUpdate(OTATarget target, String& error) {
         return false;
     }
 
-    // Never do a blocking GitHub check here (this is typically called from a web handler).
     OTAProgress p = getProgress();
     if (p.state == OTAState::CHECKING) {
         error = "Checking for updates, please wait";
@@ -461,7 +812,6 @@ bool OTAManager::startUpdate(OTATarget target, String& error) {
         return false;
     }
 
-    // Check available space in OTA partition
     if (target == OTATarget::FIRMWARE || target == OTATarget::BOTH) {
         const esp_partition_t* ota_partition = esp_ota_get_next_update_partition(NULL);
         if (ota_partition == NULL) {
@@ -472,12 +822,8 @@ bool OTAManager::startUpdate(OTATarget target, String& error) {
         
         Serial.printf("[OTA] OTA partition: %s, size: %u bytes\n", 
             ota_partition->label, ota_partition->size);
-        
-        // We don't know exact firmware size until download, but check partition exists
-        // The Update library will verify size during Update.begin()
     }
     
-    // Check available heap memory (need at least 50KB for SSL + buffers)
     size_t freeHeap = ESP.getFreeHeap();
     constexpr size_t MIN_HEAP_FOR_OTA = 50000;
     if (freeHeap < MIN_HEAP_FOR_OTA) {
@@ -487,13 +833,11 @@ bool OTAManager::startUpdate(OTATarget target, String& error) {
     }
     Serial.printf("[OTA] Pre-flight check: %u bytes free heap (minimum %u)\n", freeHeap, MIN_HEAP_FOR_OTA);
 
-    // Copy URLs into the shared release struct for the update task to use.
     if (_releaseMutex && xSemaphoreTake(_releaseMutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
         _release = info;
         xSemaphoreGive(_releaseMutex);
     }
 
-    // Set state to UPDATING_FIRMWARE before starting task to prevent race condition
     portENTER_CRITICAL(&_mux);
     _progress.state = OTAState::UPDATING_FIRMWARE;
     _progress.target = target;
@@ -502,9 +846,7 @@ bool OTAManager::startUpdate(OTATarget target, String& error) {
     _progress.error[0] = '\0';
     portEXIT_CRITICAL(&_mux);
 
-    // Pin to core 0 to avoid starving AsyncTCP on core 1.
-    // Stack size 16KB needed for WiFiClientSecure + HTTPClient + Update
-    BaseType_t ok = xTaskCreatePinnedToCore(taskThunk, "ota_update", 16384, this, 1, &_task, 0);
+    BaseType_t ok = xTaskCreatePinnedToCore(taskThunk, "ota_update", 32768, this, 1, &_task, 0);
     if (ok != pdPASS) {
         setProgress(OTAState::ERROR, 0, "Failed to start OTA task");
         error = "Failed to start OTA task";
@@ -529,18 +871,36 @@ void OTAManager::runUpdateTask(OTATarget target) {
     Serial.printf("[OTA] Firmware URL: %s\n", _release.firmwareUrl.c_str());
     Serial.printf("[OTA] SPIFFS URL: %s\n", _release.spiffsUrl.c_str());
     
-    // Disable MQTT completely during OTA to prevent race conditions
+    // Free up as much memory as possible for OTA
+    Serial.printf("[OTA] Free heap before cleanup: %u bytes\n", ESP.getFreeHeap());
+    
+    // Disable MQTT (frees ~26KB)
     mqttClient.setOtaMode(true);
+    delay(100);
+    
+    // Close WebSocket connections
+    webServer.setOtaMode(true);
+    delay(100);
+    
+    // Free display sprite buffer (~65KB on TTGO T-Display)
+    displayManager.setOtaMode(true);
+    delay(100);
+    
+    Serial.printf("[OTA] Free heap after cleanup: %u bytes\n", ESP.getFreeHeap());
 
     String err;
 
     if (target == OTATarget::FIRMWARE || target == OTATarget::BOTH) {
         Serial.println("[OTA] Starting firmware update...");
-        setProgress(OTAState::UPDATING_FIRMWARE, 0, "Downloading firmware...");
+        setProgress(OTAState::UPDATING_FIRMWARE, 0, "Starting firmware download...");
+        
         if (!downloadAndApply(_release.firmwareUrl, U_FLASH, "Firmware", err)) {
             Serial.printf("[OTA] Firmware update failed: %s\n", err.c_str());
             setProgress(OTAState::ERROR, 0, "Firmware update failed", err.c_str());
+            // Restore normal operation on error
             mqttClient.setOtaMode(false);
+            webServer.setOtaMode(false);
+            displayManager.setOtaMode(false);
             return;
         }
         Serial.println("[OTA] Firmware update successful!");
@@ -548,11 +908,15 @@ void OTAManager::runUpdateTask(OTATarget target) {
 
     if (target == OTATarget::SPIFFS || target == OTATarget::BOTH) {
         Serial.println("[OTA] Starting SPIFFS update...");
-        setProgress(OTAState::UPDATING_SPIFFS, 0, "Downloading web UI (SPIFFS)...");
+        setProgress(OTAState::UPDATING_SPIFFS, 0, "Starting SPIFFS download...");
+        
         if (!downloadAndApply(_release.spiffsUrl, U_SPIFFS, "SPIFFS", err)) {
             Serial.printf("[OTA] SPIFFS update failed: %s\n", err.c_str());
             setProgress(OTAState::ERROR, 0, "SPIFFS update failed", err.c_str());
+            // Restore normal operation on error
             mqttClient.setOtaMode(false);
+            webServer.setOtaMode(false);
+            displayManager.setOtaMode(false);
             return;
         }
         Serial.println("[OTA] SPIFFS update successful!");

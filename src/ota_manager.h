@@ -94,8 +94,9 @@ private:
 
     bool fetchLatestReleaseFromGitHub(OTAReleaseInfo& into, String& error);
     bool fetchReadmeForTag(OTAReleaseInfo& into, const String& tag, String& error);
-
+    
     bool downloadAndApply(const String& url, int updateCommand, const char* label, String& error);
+    bool downloadAndApplySPIFFS(const String& url, const char* label, String& error);
 };
 
 extern OTAManager otaManager;

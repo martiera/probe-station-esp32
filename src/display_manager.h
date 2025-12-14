@@ -42,6 +42,9 @@ public:
     void setWiFiManager(WiFiManager* wm) { wifiManager = wm; }
     void setMQTTClient(MQTTClient* mc) { mqttClient = mc; }
     
+    // OTA mode - frees sprite buffer to save ~65KB RAM
+    void setOtaMode(bool enabled);
+    
     // Navigation
     void nextPage();
     void previousPage();
@@ -81,6 +84,7 @@ private:
     uint32_t lastButtonPress = 0;
     uint32_t lastAutoRotate = 0;
     bool needsRefresh = true;
+    bool otaMode = false;
     
     // Display constants
     static constexpr uint16_t DISPLAY_WIDTH = 240;

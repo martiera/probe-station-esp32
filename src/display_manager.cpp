@@ -42,8 +42,40 @@ void DisplayManager::begin() {
 #endif
 }
 
+void DisplayManager::setOtaMode(bool enabled) {
+#ifdef USE_DISPLAY
+    otaMode = enabled;
+    if (enabled) {
+        // Free the sprite buffer to save ~65KB RAM
+        sprite.deleteSprite();
+        
+        // Show OTA message on display
+        tft.fillScreen(COLOR_BG);
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextColor(TFT_YELLOW, COLOR_BG);
+        tft.drawString("OTA Update", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 - 20, 4);
+        tft.setTextColor(TFT_WHITE, COLOR_BG);
+        tft.drawString("Please wait...", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 + 20, 2);
+        
+        Serial.printf("[Display] OTA mode enabled, sprite freed. Heap: %u\n", ESP.getFreeHeap());
+    } else {
+        // Recreate sprite
+        sprite.createSprite(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        sprite.setTextDatum(TL_DATUM);
+        needsRefresh = true;
+        
+        Serial.printf("[Display] OTA mode disabled, sprite restored. Heap: %u\n", ESP.getFreeHeap());
+    }
+#endif
+}
+
 void DisplayManager::update() {
 #ifdef USE_DISPLAY
+    // Skip updates during OTA
+    if (otaMode) {
+        return;
+    }
+    
     uint32_t now = millis();
     
     // Auto-rotate in focus mode

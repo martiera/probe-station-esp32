@@ -123,6 +123,9 @@ bool MQTTClient::isEnabled() const {
 }
 
 void MQTTClient::reconnect() {
+    if (_otaInProgress) {
+        return;
+    }
     // Just set flag - actual reconnect happens in update() on main loop
     // This is safe to call from async web handlers
     _reconnectRequested = true;
@@ -286,6 +289,9 @@ void MQTTClient::publishHADiscovery() {
 // ============================================================================
 
 bool MQTTClient::connect() {
+    if (_otaInProgress) {
+        return false;
+    }
     const MQTTConfig& config = configManager.getMQTTConfig();
     const SystemConfig& sysConfig = configManager.getSystemConfig();
     
