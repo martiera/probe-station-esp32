@@ -314,6 +314,10 @@ void setup() {
     Serial.println(F("[MAIN] Initializing web server..."));
     webServer.begin();
     
+    // Initialize OTA manager (checks for pending SPIFFS updates)
+    Serial.println(F("[MAIN] Initializing OTA manager..."));
+    otaManager.begin();
+    
 #ifdef USE_DISPLAY
     // Set display manager references
     displayManager.setSensorManager(&sensorManager);

@@ -79,6 +79,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // ============================================================================
 
 let otaCheckTimer = null;
+let otaUpdateAvailable = false;
 
 async function loadOtaInfo(force = false) {
     try {
@@ -87,8 +88,12 @@ async function loadOtaInfo(force = false) {
         document.getElementById('otaCurrent').textContent = info.current || '--';
         document.getElementById('otaAvailable').textContent = (info.latest && info.latest.tag) ? info.latest.tag : '--';
 
+        const btn = document.getElementById('otaUpdateBtn');
+        
         if (info.state === 'checking') {
-            document.getElementById('otaStatus').textContent = info.statusMessage || 'Checking...';
+            document.getElementById('otaStatus').textContent = 'Checking for updates...';
+            btn.disabled = true;
+            btn.textContent = '🔄 Checking...';
             // Poll every 2s while checking
             if (!otaCheckTimer) {
                 otaCheckTimer = setTimeout(() => {
@@ -103,19 +108,22 @@ async function loadOtaInfo(force = false) {
                 otaCheckTimer = null;
             }
             
+            otaUpdateAvailable = info.updateAvailable;
+            
             if (info.error) {
-                document.getElementById('otaStatus').textContent = `Error: ${info.error}`;
-            } else if (info.statusMessage) {
-                document.getElementById('otaStatus').textContent = info.statusMessage;
+                document.getElementById('otaStatus').textContent = info.error;
+                btn.disabled = false;
+                btn.textContent = '🔄 Check for Updates';
+            } else if (info.updateAvailable) {
+                document.getElementById('otaStatus').textContent = `New version ${info.latest.tag} available`;
+                btn.disabled = false;
+                btn.textContent = '⬆️ Install Update';
             } else {
-                document.getElementById('otaStatus').textContent = info.updateAvailable ? 'Update available' : 'Up to date';
+                document.getElementById('otaStatus').textContent = 'You have the latest version';
+                btn.disabled = false;
+                btn.textContent = '🔄 Check for Updates';
             }
         }
-        document.getElementById('otaProgress').textContent = '--';
-
-        const btn = document.getElementById('otaUpdateBtn');
-        btn.disabled = !info.updateAvailable;
-        btn.textContent = info.updateAvailable ? '⬆️ Flash Update' : 'Up to date';
         
         // If new update available, clear dismissed flag so banner shows
         if (info.updateAvailable) {
@@ -123,8 +131,10 @@ async function loadOtaInfo(force = false) {
             showUpdateBannerIfAvailable();
         }
     } catch (e) {
-        const msg = (e && e.message) ? e.message : 'unable to load OTA info';
-        document.getElementById('otaStatus').textContent = `Error: ${msg}`;
+        const msg = (e && e.message) ? e.message : 'Unable to check for updates';
+        document.getElementById('otaStatus').textContent = msg;
+        document.getElementById('otaUpdateBtn').disabled = false;
+        document.getElementById('otaUpdateBtn').textContent = '🔄 Check for Updates';
         // Stop polling on error
         if (otaCheckTimer) {
             clearTimeout(otaCheckTimer);
@@ -133,20 +143,27 @@ async function loadOtaInfo(force = false) {
     }
 }
 
+function handleOtaButton() {
+    if (otaUpdateAvailable) {
+        startOtaUpdate();
+    } else {
+        checkOta();
+    }
+}
+
 function checkOta() {
-    // Show immediate feedback
+    const btn = document.getElementById('otaUpdateBtn');
+    btn.disabled = true;
+    btn.textContent = '🔄 Checking...';
     document.getElementById('otaStatus').textContent = 'Checking for updates...';
     document.getElementById('otaAvailable').textContent = '--';
     loadOtaInfo(true); // Force check
 }
 
 async function startOtaUpdate() {
-    const confirmMsg = 'This will update firmware and web UI, then reboot the device. Continue?';
-    if (!confirm(confirmMsg)) return;
-
     const btn = document.getElementById('otaUpdateBtn');
     btn.disabled = true;
-    btn.textContent = 'Starting...';
+    btn.textContent = '⬆️ Installing...';
     document.getElementById('otaStatus').textContent = 'Starting update...';
 
     try {
@@ -154,9 +171,10 @@ async function startOtaUpdate() {
         showOtaOverlay();
         startOtaPolling();
     } catch (e) {
-        document.getElementById('otaStatus').textContent = 'Error: failed to start OTA';
+        const msg = (e && e.message) ? e.message : 'Failed to start update';
+        document.getElementById('otaStatus').textContent = msg;
         btn.disabled = false;
-        btn.textContent = '⬆️ Flash Update';
+        btn.textContent = '⬆️ Install Update';
     }
 }
 
@@ -217,26 +235,45 @@ let otaRebootCheckTimer = null;
 async function loadOtaStatus() {
     try {
         const st = await apiGet('ota/status');
-        document.getElementById('otaStatus').textContent = st.state || '--';
-        document.getElementById('otaProgress').textContent = (typeof st.progress === 'number') ? `${st.progress}%` : '--';
         
-        // Update the overlay
-        const statusText = st.message || st.state || 'Updating...';
+        // Map internal states to user-friendly messages
+        let userStatus = st.state || 'Unknown';
+        let overlayStatus = st.message || 'Updating...';
         const progress = (typeof st.progress === 'number') ? st.progress : 0;
-        updateOtaOverlay(statusText, progress);
+        
+        // User-friendly status mapping
+        if (st.state === 'updating_spiffs') {
+            userStatus = 'Updating web interface...';
+            overlayStatus = 'Updating web interface...';
+        } else if (st.state === 'updating_firmware') {
+            userStatus = 'Updating firmware...';
+            overlayStatus = 'Updating firmware...';
+        } else if (st.state === 'rebooting') {
+            userStatus = 'Restarting device...';
+            overlayStatus = 'Restarting device...';
+        } else if (st.state === 'checking') {
+            userStatus = 'Checking for updates...';
+        } else if (st.state === 'ready') {
+            userStatus = 'Ready';
+        } else if (st.state === 'idle') {
+            userStatus = 'Idle';
+        }
+        
+        document.getElementById('otaStatus').textContent = userStatus;
+        updateOtaOverlay(overlayStatus, progress);
 
         // Check for progress timeout (1 minute without progress change)
         if (progress > otaLastProgress) {
             // Progress increased, reset timeout
             otaLastProgress = progress;
             otaLastProgressTime = Date.now();
-        } else if (st.state && st.state.includes('download')) {
-            // Only check timeout during download phase
+        } else if (st.state && (st.state.includes('updating') || st.state.includes('download'))) {
+            // Only check timeout during update phase
             const elapsed = Date.now() - otaLastProgressTime;
             if (elapsed > OTA_PROGRESS_TIMEOUT_MS) {
                 // No progress for 1 minute, likely stuck
-                document.getElementById('otaStatus').textContent = 'Error: Download stalled';
-                updateOtaOverlay('Download stalled - no progress for 1 minute', progress);
+                document.getElementById('otaStatus').textContent = 'Update stalled - please try again';
+                updateOtaOverlay('Update stalled', progress);
                 stopOtaPolling();
                 setTimeout(hideOtaOverlay, 5000);
                 await loadOtaInfo();
@@ -245,8 +282,8 @@ async function loadOtaStatus() {
         }
 
         if (st.error) {
-            document.getElementById('otaStatus').textContent = `Error: ${st.error}`;
-            updateOtaOverlay(`Error: ${st.error}`, progress);
+            document.getElementById('otaStatus').textContent = st.error;
+            updateOtaOverlay(st.error, progress);
             stopOtaPolling();
             // Hide overlay after 3 seconds on error
             setTimeout(hideOtaOverlay, 3000);
@@ -263,16 +300,15 @@ async function loadOtaStatus() {
 
         if (st.state === 'rebooting') {
             stopOtaPolling();
-            updateOtaOverlay('Rebooting device...', 100);
-            document.getElementById('otaStatus').textContent = 'Rebooting...';
-            document.getElementById('otaProgress').textContent = '100%';
+            updateOtaOverlay('Restarting device...', 100);
+            document.getElementById('otaStatus').textContent = 'Restarting device...';
             // Start checking if device comes back online
             startRebootCheck();
         }
     } catch (e) {
         // During reboot the device will go offline; start checking for comeback
         stopOtaPolling();
-        updateOtaOverlay('Device rebooting...', 100);
+        updateOtaOverlay('Device restarting...', 100);
         startRebootCheck();
     }
 }

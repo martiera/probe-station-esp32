@@ -673,6 +673,13 @@ body {
     font-weight: 500;
 }
 
+/* OTA Update Status */
+.ota-status-text {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    margin: var(--space-md) 0 var(--space-lg);
+}
+
 /* Sensor List (Settings) */
 .sensor-list {
     display: flex;

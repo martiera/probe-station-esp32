@@ -47,7 +47,10 @@ void DisplayManager::setOtaMode(bool enabled) {
     otaMode = enabled;
     if (enabled) {
         // Free the sprite buffer to save ~65KB RAM
+        // Yield before and after to prevent watchdog timeout
+        vTaskDelay(pdMS_TO_TICKS(10));
         sprite.deleteSprite();
+        vTaskDelay(pdMS_TO_TICKS(10));
         
         // Show OTA message on display
         tft.fillScreen(COLOR_BG);
@@ -60,7 +63,9 @@ void DisplayManager::setOtaMode(bool enabled) {
         Serial.printf("[Display] OTA mode enabled, sprite freed. Heap: %u\n", ESP.getFreeHeap());
     } else {
         // Recreate sprite
+        vTaskDelay(pdMS_TO_TICKS(10));
         sprite.createSprite(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        vTaskDelay(pdMS_TO_TICKS(10));
         sprite.setTextDatum(TL_DATUM);
         needsRefresh = true;
         

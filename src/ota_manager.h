@@ -55,6 +55,10 @@ class OTAManager {
 public:
     OTAManager();
 
+    // Initialize OTA manager - call from setup() after WiFi is connected
+    // Checks for pending SPIFFS update from previous firmware update
+    void begin();
+
     // Starts/refreshes GitHub release info in a background task (non-blocking).
     // Returns true if info is already fresh or a refresh task is running/started.
     bool ensureReleaseInfoFresh(bool force, String& error);

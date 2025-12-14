@@ -273,6 +273,10 @@ OTAManager::OTAManager() : _mux(portMUX_INITIALIZER_UNLOCKED), _task(nullptr) {
     _progress.error[0] = '\0';
 }
 
+void OTAManager::begin() {
+    Serial.println("[OTA] OTA ready");
+}
+
 void OTAManager::getReleaseInfoCopy(OTAReleaseInfo& out) const {
     if (_releaseMutex && xSemaphoreTake(_releaseMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         out = _release;
@@ -343,6 +347,7 @@ OTAPartitionInfo OTAManager::getPartitionInfo() {
 void OTAManager::update() {
     uint32_t now = millis();
     
+    // Daily auto-check for updates
     if (_lastAutoCheck == 0) {
         _lastAutoCheck = now;
         return;
@@ -682,7 +687,14 @@ bool OTAManager::downloadAndApply(const String& url, int updateCommand, const ch
         return false;
     }
     
-    Serial.printf("[OTA] %s: Firmware update successful! %u bytes written\n", label, totalWritten);
+    // Reboot immediately after setting boot partition
+    // The old code in memory may become invalid, so reboot now before any issues
+    Serial.printf("[OTA] %s: Firmware update successful! %u bytes written. Rebooting...\n", label, totalWritten);
+    Serial.flush();
+    delay(100);
+    ESP.restart();
+    
+    // Never reaches here
     return true;
 }
 
@@ -876,44 +888,92 @@ void OTAManager::runUpdateTask(OTATarget target) {
     
     // Disable MQTT (frees ~26KB)
     mqttClient.setOtaMode(true);
-    delay(100);
+    vTaskDelay(pdMS_TO_TICKS(100));
     
     // Close WebSocket connections
     webServer.setOtaMode(true);
-    delay(100);
+    vTaskDelay(pdMS_TO_TICKS(100));
     
     // Free display sprite buffer (~65KB on TTGO T-Display)
+    Serial.println("[OTA] Freeing display sprite...");
     displayManager.setOtaMode(true);
-    delay(100);
+    vTaskDelay(pdMS_TO_TICKS(500));
     
     Serial.printf("[OTA] Free heap after cleanup: %u bytes\n", ESP.getFreeHeap());
 
     String err;
 
-    if (target == OTATarget::FIRMWARE || target == OTATarget::BOTH) {
-        Serial.println("[OTA] Starting firmware update...");
-        setProgress(OTAState::UPDATING_FIRMWARE, 0, "Starting firmware download...");
+    // For "BOTH" target: Update SPIFFS first, then firmware
+    // SPIFFS is smaller and doesn't require reboot, so we do it first
+    // Then firmware update + reboot completes the process in one go
+    
+    if (target == OTATarget::BOTH) {
+        // Phase 1: SPIFFS (smaller, no reboot needed)
+        if (_release.spiffsUrl.length() > 0) {
+            Serial.println("[OTA] Phase 1: Starting SPIFFS update (smaller, faster)...");
+            setProgress(OTAState::UPDATING_SPIFFS, 0, "Updating SPIFFS...");
+            
+            if (!downloadAndApply(_release.spiffsUrl, U_SPIFFS, "SPIFFS", err)) {
+                Serial.printf("[OTA] SPIFFS update failed: %s\n", err.c_str());
+                setProgress(OTAState::ERROR, 0, "SPIFFS update failed", err.c_str());
+                mqttClient.setOtaMode(false);
+                webServer.setOtaMode(false);
+                displayManager.setOtaMode(false);
+                return;
+            }
+            Serial.println("[OTA] SPIFFS update successful!");
+            vTaskDelay(pdMS_TO_TICKS(500));  // Brief pause between updates
+        }
+        
+        // Phase 2: Firmware (requires reboot)
+        Serial.println("[OTA] Phase 2: Starting firmware update...");
+        setProgress(OTAState::UPDATING_FIRMWARE, 0, "Updating firmware...");
         
         if (!downloadAndApply(_release.firmwareUrl, U_FLASH, "Firmware", err)) {
             Serial.printf("[OTA] Firmware update failed: %s\n", err.c_str());
             setProgress(OTAState::ERROR, 0, "Firmware update failed", err.c_str());
-            // Restore normal operation on error
             mqttClient.setOtaMode(false);
             webServer.setOtaMode(false);
             displayManager.setOtaMode(false);
             return;
         }
-        Serial.println("[OTA] Firmware update successful!");
+        
+        Serial.println("[OTA] Both updates complete! Rebooting...");
+        setProgress(OTAState::REBOOTING, 100, "Update complete. Rebooting...");
+        Serial.flush();
+        delay(1000);
+        ESP.restart();
+        return;  // Never reaches here
     }
 
-    if (target == OTATarget::SPIFFS || target == OTATarget::BOTH) {
-        Serial.println("[OTA] Starting SPIFFS update...");
+    if (target == OTATarget::FIRMWARE) {
+        Serial.println("[OTA] Starting firmware-only update...");
+        setProgress(OTAState::UPDATING_FIRMWARE, 0, "Starting firmware download...");
+        
+        if (!downloadAndApply(_release.firmwareUrl, U_FLASH, "Firmware", err)) {
+            Serial.printf("[OTA] Firmware update failed: %s\n", err.c_str());
+            setProgress(OTAState::ERROR, 0, "Firmware update failed", err.c_str());
+            mqttClient.setOtaMode(false);
+            webServer.setOtaMode(false);
+            displayManager.setOtaMode(false);
+            return;
+        }
+        
+        Serial.println("[OTA] Firmware update successful! Rebooting...");
+        setProgress(OTAState::REBOOTING, 100, "Firmware updated. Rebooting...");
+        Serial.flush();
+        delay(1000);
+        ESP.restart();
+        return;  // Never reaches here
+    }
+
+    if (target == OTATarget::SPIFFS) {
+        Serial.println("[OTA] Starting SPIFFS-only update...");
         setProgress(OTAState::UPDATING_SPIFFS, 0, "Starting SPIFFS download...");
         
         if (!downloadAndApply(_release.spiffsUrl, U_SPIFFS, "SPIFFS", err)) {
             Serial.printf("[OTA] SPIFFS update failed: %s\n", err.c_str());
             setProgress(OTAState::ERROR, 0, "SPIFFS update failed", err.c_str());
-            // Restore normal operation on error
             mqttClient.setOtaMode(false);
             webServer.setOtaMode(false);
             displayManager.setOtaMode(false);

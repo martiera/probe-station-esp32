@@ -297,35 +297,19 @@
 
             <!-- OTA Update -->
             <div class="section">
-                <div class="section-header">
-                    <h2>Software Update</h2>
-                    <button class="btn btn-secondary" onclick="checkOta()">🔄 Check</button>
-                </div>
+                <h2>Software Update</h2>
                 <div class="info-grid">
                     <div class="info-item">
-                        <span class="info-label">Current Version</span>
+                        <span class="info-label">Installed</span>
                         <span class="info-value" id="otaCurrent">--</span>
                     </div>
                     <div class="info-item">
-                        <span class="info-label">Available Version</span>
+                        <span class="info-label">Latest</span>
                         <span class="info-value" id="otaAvailable">--</span>
                     </div>
-                    <div class="info-item">
-                        <span class="info-label">Update Status</span>
-                        <span class="info-value" id="otaStatus">--</span>
-                    </div>
-                    <div class="info-item">
-                        <span class="info-label">Progress</span>
-                        <span class="info-value" id="otaProgress">--</span>
-                    </div>
                 </div>
-                <div class="button-group">
-                    <button class="btn btn-primary" id="otaUpdateBtn" onclick="startOtaUpdate()">⬆️ Flash Update</button>
-                </div>
-                <p class="help-text" style="margin-top: 10px; font-size: 0.85em; color: var(--text-secondary);">
-                    This updates <strong>firmware</strong> and the <strong>web UI (SPIFFS)</strong>. Configuration is preserved (stored in NVS).
-                    The device will reboot after the update.
-                </p>
+                <p class="ota-status-text" id="otaStatus">--</p>
+                <button class="btn btn-primary" id="otaUpdateBtn" onclick="handleOtaButton()">🔄 Check for Updates</button>
             </div>
 
             <!-- Actions -->
