@@ -13,6 +13,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <DNSServer.h>
 #include "config.h"
 #include "config_manager.h"
 
@@ -204,6 +205,9 @@ private:
     int16_t _scanResults;
     bool _scanComplete;
     bool _scanInProgress;
+    
+    // Captive portal DNS server
+    DNSServer* _dnsServer;
     
     WiFiStateCallback _stateCallback;
     

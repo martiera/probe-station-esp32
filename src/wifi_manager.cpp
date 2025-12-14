@@ -25,6 +25,7 @@ WiFiManager::WiFiManager() :
     _scanResults(-1),
     _scanComplete(false),
     _scanInProgress(false),
+    _dnsServer(nullptr),
     _stateCallback(nullptr) {
 }
 
@@ -54,6 +55,11 @@ void WiFiManager::begin() {
 }
 
 void WiFiManager::update() {
+    // Process DNS requests for captive portal
+    if (_dnsServer) {
+        _dnsServer->processNextRequest();
+    }
+    
     uint32_t now = millis();
     
     switch (_state) {
@@ -218,6 +224,14 @@ void WiFiManager::startAP(bool keepStation) {
     Serial.printf("[WiFiManager] AP Password: %s\n", AP_PASSWORD);
     Serial.printf("[WiFiManager] AP IP: %s\n", apIP.toString().c_str());
     
+    // Start DNS server for captive portal
+    if (!_dnsServer) {
+        _dnsServer = new DNSServer();
+    }
+    // Redirect all DNS requests to AP IP for captive portal
+    _dnsServer->start(53, "*", apIP);
+    Serial.println(F("[WiFiManager] DNS server started for captive portal"));
+    
     if (keepStation) {
         setState(WiFiState::AP_STA_MODE);
     } else {
@@ -229,6 +243,14 @@ void WiFiManager::stopAP() {
     if (!_apActive) return;
     
     Serial.println(F("[WiFiManager] Stopping Access Point"));
+    
+    // Stop DNS server
+    if (_dnsServer) {
+        _dnsServer->stop();
+        delete _dnsServer;
+        _dnsServer = nullptr;
+        Serial.println(F("[WiFiManager] DNS server stopped"));
+    }
     
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_STA);

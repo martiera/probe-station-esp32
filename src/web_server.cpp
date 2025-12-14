@@ -235,6 +235,35 @@ void WebServer::setupRoutes() {
             handleGetHistory(request, idx);
         });
     
+    // ========== Captive Portal Detection ==========
+    // Android captive portal detection
+    _server.on("/generate_204", HTTP_GET, [](AsyncWebServerRequest* request) {
+        request->redirect("/");
+    });
+    
+    // iOS/macOS captive portal detection
+    _server.on("/hotspot-detect.html", HTTP_GET, [](AsyncWebServerRequest* request) {
+        request->redirect("/");
+    });
+    
+    // Microsoft captive portal detection
+    _server.on("/connecttest.txt", HTTP_GET, [](AsyncWebServerRequest* request) {
+        request->redirect("/");
+    });
+    
+    // Generic captive portal detection
+    _server.on("/redirect", HTTP_GET, [](AsyncWebServerRequest* request) {
+        request->redirect("/");
+    });
+    
+    _server.on("/canonical.html", HTTP_GET, [](AsyncWebServerRequest* request) {
+        request->redirect("/");
+    });
+    
+    _server.on("/success.txt", HTTP_GET, [](AsyncWebServerRequest* request) {
+        request->redirect("/");
+    });
+    
     // ========== CORS Headers ==========
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
@@ -245,7 +274,12 @@ void WebServer::setupRoutes() {
         if (request->method() == HTTP_OPTIONS) {
             request->send(200);
         } else {
-            request->send(404, "text/plain", "Not found");
+            // Redirect to root for captive portal
+            if (wifiManager.isAPMode()) {
+                request->redirect("/");
+            } else {
+                request->send(404, "text/plain", "Not found");
+            }
         }
     });
 }
