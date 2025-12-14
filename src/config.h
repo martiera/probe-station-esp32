@@ -162,12 +162,15 @@ constexpr long NTP_UTC_OFFSET = 0;  // UTC offset in seconds
 // Version Information
 // ============================================================================
 
-// NOTE: For releases, CI can override this via -DFW_VERSION=\"vX.Y.Z\"
+// NOTE: For releases, CI can override this via -DFW_VERSION=vX.Y.Z
 #ifndef FW_VERSION
-#define FW_VERSION "v1.0.0"
+#define FW_VERSION v1.0.0
 #endif
 
-constexpr char FIRMWARE_VERSION[] = FW_VERSION;
+#define FW_VERSION_STR_HELPER(x) #x
+#define FW_VERSION_STR(x) FW_VERSION_STR_HELPER(x)
+
+constexpr char FIRMWARE_VERSION[] = FW_VERSION_STR(FW_VERSION);
 constexpr char DEVICE_NAME[] = "ESP32 Temperature Monitor";
 
 // ============================================================================
