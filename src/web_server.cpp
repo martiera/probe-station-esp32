@@ -9,6 +9,7 @@
 #include <SPIFFS.h>
 #include "wifi_manager.h"
 #include "mqtt_client.h"
+#include "ota_manager.h"
 
 // Global instance
 WebServer webServer;
@@ -192,6 +193,25 @@ void WebServer::setupRoutes() {
     _server.on("/api/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest* request) {
         handleWiFiScan(request);
     });
+
+    // ========== OTA (GitHub Releases) ==========
+    _server.on("/api/ota/info", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        handleGetOtaInfo(request);
+    });
+
+    _server.on("/api/ota/status", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        handleGetOtaStatus(request);
+    });
+
+    AsyncCallbackJsonWebHandler* otaUpdateHandler = new AsyncCallbackJsonWebHandler(
+        "/api/ota/update",
+        [this](AsyncWebServerRequest* request, JsonVariant& json) {
+            String jsonStr;
+            serializeJson(json, jsonStr);
+            handleStartOtaUpdate(request, (uint8_t*)jsonStr.c_str(), jsonStr.length());
+        }
+    );
+    _server.addHandler(otaUpdateHandler);
     
     // ========== Calibration ==========
     AsyncCallbackJsonWebHandler* calibrateHandler = new AsyncCallbackJsonWebHandler(
@@ -731,6 +751,107 @@ void WebServer::handleGetHistory(AsyncWebServerRequest* request, uint8_t sensorI
     char buffer[512];
     serializeJson(doc, buffer, sizeof(buffer));
     sendJson(request, 200, buffer);
+}
+
+// ============================================================================
+// OTA Handlers
+// ============================================================================
+
+static const char* otaStateToString(OTAState state) {
+    switch (state) {
+        case OTAState::IDLE:             return "idle";
+        case OTAState::CHECKING:         return "checking";
+        case OTAState::READY:            return "ready";
+        case OTAState::UPDATING_FIRMWARE:return "updating_firmware";
+        case OTAState::UPDATING_SPIFFS:  return "updating_spiffs";
+        case OTAState::REBOOTING:        return "rebooting";
+        case OTAState::ERROR:            return "error";
+        default:                         return "unknown";
+    }
+}
+
+void WebServer::handleGetOtaInfo(AsyncWebServerRequest* request) {
+    if (!configManager.getSystemConfig().otaEnabled) {
+        sendError(request, 403, "OTA disabled");
+        return;
+    }
+
+    String err;
+    otaManager.refreshReleaseInfo(err);
+    const OTAReleaseInfo& info = otaManager.getReleaseInfo();
+
+    JsonDocument doc;
+    doc["current"] = FIRMWARE_VERSION;
+    doc["github"]["owner"] = GITHUB_OWNER;
+    doc["github"]["repo"] = GITHUB_REPO;
+
+    doc["latest"]["tag"] = info.tag;
+    doc["latest"]["name"] = info.name;
+    doc["latest"]["notes"] = info.body;
+    doc["latest"]["readme"] = info.readme;
+    doc["latest"]["assets"]["firmware"] = info.firmwareUrl.length() > 0;
+    doc["latest"]["assets"]["spiffs"] = info.spiffsUrl.length() > 0;
+
+    doc["configPreserved"] = true; // config stored in NVS
+
+    bool updateAvailable = (info.tag.length() > 0) && (String(FIRMWARE_VERSION) != info.tag);
+    doc["updateAvailable"] = updateAvailable;
+
+    if (err.length() > 0) {
+        doc["error"] = err;
+    }
+
+    String out;
+    serializeJson(doc, out);
+    sendJson(request, 200, out.c_str());
+}
+
+void WebServer::handleGetOtaStatus(AsyncWebServerRequest* request) {
+    OTAProgress p = otaManager.getProgress();
+
+    JsonDocument doc;
+    doc["state"] = otaStateToString(p.state);
+    doc["progress"] = p.progressPercent;
+    doc["message"] = p.message;
+    doc["error"] = p.error;
+
+    String out;
+    serializeJson(doc, out);
+    sendJson(request, 200, out.c_str());
+}
+
+void WebServer::handleStartOtaUpdate(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
+    if (!configManager.getSystemConfig().otaEnabled) {
+        sendError(request, 403, "OTA disabled");
+        return;
+    }
+
+    if (wifiManager.getState() != WiFiState::CONNECTED && wifiManager.getState() != WiFiState::AP_STA_MODE) {
+        sendError(request, 400, "WiFi not connected (need internet for GitHub OTA)");
+        return;
+    }
+
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, data, len);
+    if (error) {
+        sendError(request, 400, "Invalid JSON");
+        return;
+    }
+
+    String targetStr = doc["target"] | "both";
+    targetStr.toLowerCase();
+
+    OTATarget target = OTATarget::BOTH;
+    if (targetStr == "firmware") target = OTATarget::FIRMWARE;
+    else if (targetStr == "spiffs") target = OTATarget::SPIFFS;
+
+    String err;
+    if (!otaManager.startUpdate(target, err)) {
+        sendError(request, 400, err.c_str());
+        return;
+    }
+
+    sendSuccess(request, "OTA update started");
 }
 
 // ============================================================================

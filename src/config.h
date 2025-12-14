@@ -162,7 +162,19 @@ constexpr long NTP_UTC_OFFSET = 0;  // UTC offset in seconds
 // Version Information
 // ============================================================================
 
-constexpr char FIRMWARE_VERSION[] = "1.0.0";
+// NOTE: For releases, CI can override this via -DFW_VERSION=\"vX.Y.Z\"
+#ifndef FW_VERSION
+#define FW_VERSION "v1.0.0"
+#endif
+
+constexpr char FIRMWARE_VERSION[] = FW_VERSION;
 constexpr char DEVICE_NAME[] = "ESP32 Temperature Monitor";
+
+// ============================================================================
+// GitHub OTA (Releases)
+// ============================================================================
+
+constexpr char GITHUB_OWNER[] = "martiera";
+constexpr char GITHUB_REPO[] = "probe-station-esp32";
 
 #endif // CONFIG_H

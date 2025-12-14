@@ -165,6 +165,21 @@ private:
      * GET /api/history/{id} - Get sensor temperature history
      */
     void handleGetHistory(AsyncWebServerRequest* request, uint8_t sensorIndex);
+
+    /**
+     * GET /api/ota/info - GitHub Releases OTA info
+     */
+    void handleGetOtaInfo(AsyncWebServerRequest* request);
+
+    /**
+     * GET /api/ota/status - OTA progress/status
+     */
+    void handleGetOtaStatus(AsyncWebServerRequest* request);
+
+    /**
+     * POST /api/ota/update - Start OTA update
+     */
+    void handleStartOtaUpdate(AsyncWebServerRequest* request, uint8_t* data, size_t len);
     
     // ========================================================================
     // WebSocket Handlers

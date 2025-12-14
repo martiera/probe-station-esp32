@@ -6,6 +6,13 @@
 #include "config_manager.h"
 #include <SPIFFS.h>
 
+namespace {
+constexpr const char* PREFS_NS = "tempmon";
+constexpr const char* PREFS_KEY = "cfg";
+constexpr uint32_t CFG_MAGIC = 0x544D4346; // 'TMCF'
+constexpr uint16_t CFG_VERSION = 1;
+}
+
 // Global instance
 ConfigManager configManager;
 
@@ -16,6 +23,7 @@ ConfigManager configManager;
 bool ConfigManager::begin() {
     _isDirty = false;
     _initialized = false;
+    _prefsOpen = false;
     
     // Initialize SPIFFS
     if (!SPIFFS.begin(true)) {
@@ -31,76 +39,36 @@ bool ConfigManager::begin() {
     Serial.printf("[ConfigManager] SPIFFS: %u/%u bytes used\n", usedBytes, totalBytes);
     
     _initialized = true;
+
+    // Initialize NVS preferences
+    if (!_prefs.begin(PREFS_NS, false)) {
+        Serial.println(F("[ConfigManager] Failed to open NVS preferences"));
+        return false;
+    }
+    _prefsOpen = true;
     
-    // Try to load existing configuration
-    if (!load()) {
-        Serial.println(F("[ConfigManager] No valid config found, using defaults"));
-        resetToDefaults();
+    // Try to load existing configuration (NVS)
+    if (!loadFromNVS()) {
+        // One-time legacy import from SPIFFS (/config.json)
+        if (loadLegacyFromSPIFFS()) {
+            Serial.println(F("[ConfigManager] Imported legacy SPIFFS config into NVS"));
+            saveToNVS();
+        } else {
+            Serial.println(F("[ConfigManager] No valid config found, using defaults"));
+            resetToDefaults();
+            saveToNVS();
+        }
     }
     
     return true;
 }
 
 bool ConfigManager::load() {
-    if (!_initialized) {
-        return false;
-    }
-    
-    File file = SPIFFS.open(CONFIG_FILE_PATH, "r");
-    if (!file) {
-        Serial.println(F("[ConfigManager] Config file not found"));
-        return false;
-    }
-    
-    // Parse JSON
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, file);
-    file.close();
-    
-    if (error) {
-        Serial.printf("[ConfigManager] JSON parse error: %s\n", error.c_str());
-        return false;
-    }
-    
-    // Import configuration
-    if (!fromJson(doc)) {
-        Serial.println(F("[ConfigManager] Failed to import configuration"));
-        return false;
-    }
-    
-    Serial.println(F("[ConfigManager] Configuration loaded successfully"));
-    _isDirty = false;
-    return true;
+    return loadFromNVS();
 }
 
 bool ConfigManager::save() {
-    if (!_initialized) {
-        return false;
-    }
-    
-    // Create JSON document
-    JsonDocument doc;
-    toJson(doc);
-    
-    // Open file for writing
-    File file = SPIFFS.open(CONFIG_FILE_PATH, "w");
-    if (!file) {
-        Serial.println(F("[ConfigManager] Failed to open config file for writing"));
-        return false;
-    }
-    
-    // Serialize JSON to file
-    size_t bytesWritten = serializeJson(doc, file);
-    file.close();
-    
-    if (bytesWritten == 0) {
-        Serial.println(F("[ConfigManager] Failed to write config file"));
-        return false;
-    }
-    
-    Serial.printf("[ConfigManager] Configuration saved (%u bytes)\n", bytesWritten);
-    _isDirty = false;
-    return true;
+    return saveToNVS();
 }
 
 void ConfigManager::resetToDefaults() {
@@ -114,6 +82,95 @@ void ConfigManager::resetToDefaults() {
     
     _isDirty = true;
     Serial.println(F("[ConfigManager] Reset to defaults"));
+}
+
+bool ConfigManager::loadFromNVS() {
+    if (!_initialized || !_prefsOpen) {
+        return false;
+    }
+
+    size_t len = _prefs.getBytesLength(PREFS_KEY);
+    if (len != sizeof(PersistentConfigBlob)) {
+        Serial.println(F("[ConfigManager] NVS config not present (or size mismatch)"));
+        return false;
+    }
+
+    PersistentConfigBlob blob{};
+    size_t read = _prefs.getBytes(PREFS_KEY, &blob, sizeof(blob));
+    if (read != sizeof(blob)) {
+        Serial.println(F("[ConfigManager] Failed to read NVS config"));
+        return false;
+    }
+    if (blob.magic != CFG_MAGIC || blob.version != CFG_VERSION) {
+        Serial.println(F("[ConfigManager] NVS config invalid (magic/version)"));
+        return false;
+    }
+
+    _wifiConfig = blob.wifi;
+    _mqttConfig = blob.mqtt;
+    _systemConfig = blob.system;
+    for (uint8_t i = 0; i < MAX_SENSORS; i++) {
+        _sensorConfigs[i] = blob.sensors[i];
+    }
+
+    Serial.println(F("[ConfigManager] Configuration loaded from NVS"));
+    _isDirty = false;
+    return true;
+}
+
+bool ConfigManager::saveToNVS() {
+    if (!_initialized || !_prefsOpen) {
+        return false;
+    }
+
+    PersistentConfigBlob blob{};
+    blob.magic = CFG_MAGIC;
+    blob.version = CFG_VERSION;
+    blob.wifi = _wifiConfig;
+    blob.mqtt = _mqttConfig;
+    blob.system = _systemConfig;
+    for (uint8_t i = 0; i < MAX_SENSORS; i++) {
+        blob.sensors[i] = _sensorConfigs[i];
+    }
+
+    size_t written = _prefs.putBytes(PREFS_KEY, &blob, sizeof(blob));
+    if (written != sizeof(blob)) {
+        Serial.println(F("[ConfigManager] Failed to write NVS config"));
+        return false;
+    }
+
+    Serial.println(F("[ConfigManager] Configuration saved to NVS"));
+    _isDirty = false;
+    return true;
+}
+
+bool ConfigManager::loadLegacyFromSPIFFS() {
+    if (!_initialized) {
+        return false;
+    }
+
+    File file = SPIFFS.open(CONFIG_FILE_PATH, "r");
+    if (!file) {
+        Serial.println(F("[ConfigManager] Legacy config file not found in SPIFFS"));
+        return false;
+    }
+
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, file);
+    file.close();
+
+    if (error) {
+        Serial.printf("[ConfigManager] Legacy JSON parse error: %s\n", error.c_str());
+        return false;
+    }
+
+    if (!fromJson(doc)) {
+        Serial.println(F("[ConfigManager] Failed to import legacy SPIFFS configuration"));
+        return false;
+    }
+
+    _isDirty = true;
+    return true;
 }
 
 SensorConfig* ConfigManager::getSensorConfig(uint8_t index) {

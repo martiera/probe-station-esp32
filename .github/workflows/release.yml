@@ -1,0 +1,55 @@
+name: Release (ESP32 OTA Assets)
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio
+
+      - name: Build firmware (release)
+        env:
+          FW_VERSION: ${{ github.ref_name }}
+        run: |
+          platformio run -e release
+
+      - name: Build filesystem (SPIFFS)
+        env:
+          FW_VERSION: ${{ github.ref_name }}
+        run: |
+          platformio run -e release -t buildfs
+
+      - name: Prepare assets
+        run: |
+          mkdir -p dist
+          cp .pio/build/release/firmware.bin dist/firmware.bin
+          cp .pio/build/release/spiffs.bin dist/spiffs.bin
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/firmware.bin
+            dist/spiffs.bin

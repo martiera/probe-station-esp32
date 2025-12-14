@@ -14,6 +14,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include "config.h"
 
 // ============================================================================
@@ -215,12 +216,29 @@ public:
     bool fromJson(const JsonDocument& doc);
     
 private:
+    struct PersistentConfigBlob {
+        uint32_t magic;
+        uint16_t version;
+        uint16_t reserved;
+        WiFiConfig wifi;
+        MQTTConfig mqtt;
+        SystemConfig system;
+        SensorConfig sensors[MAX_SENSORS];
+    };
+
     WiFiConfig _wifiConfig;
     MQTTConfig _mqttConfig;
     SystemConfig _systemConfig;
     SensorConfig _sensorConfigs[MAX_SENSORS];
     bool _isDirty;
     bool _initialized;
+
+    Preferences _prefs;
+    bool _prefsOpen = false;
+
+    bool loadFromNVS();
+    bool saveToNVS();
+    bool loadLegacyFromSPIFFS();
     
     /**
      * Serialize sensor config to JSON

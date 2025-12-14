@@ -67,6 +67,33 @@ body {
     padding: var(--space-md);
 }
 
+/* Code/README box */
+.code-box {
+    margin-top: var(--space-md);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--bg-secondary);
+}
+
+.code-box-header {
+    padding: var(--space-sm) var(--space-md);
+    border-bottom: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.code-box-body {
+    margin: 0;
+    padding: var(--space-md);
+    max-height: 300px;
+    overflow: auto;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
 /* Header */
 .header {
     display: flex;

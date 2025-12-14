@@ -264,6 +264,11 @@ void DisplayManager::drawFooter() {
 #ifdef USE_DISPLAY
     // Minimal footer - just navigation hint and page dots
     const int16_t footerY = DISPLAY_HEIGHT - 16;
+
+    // Firmware version (left bottom)
+    sprite.setTextDatum(ML_DATUM);
+    sprite.setTextColor(COLOR_GRAY, COLOR_BG);
+    sprite.drawString(FIRMWARE_VERSION, 4, footerY, 2);
     
     // Page indicator dots (center bottom) ● ○ ○ ○
     sprite.setTextDatum(MC_DATUM);

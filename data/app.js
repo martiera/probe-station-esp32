@@ -20,6 +20,8 @@ let systemStatus = null;
 let reconnectTimer = null;
 let pinnedSensorAddress = localStorage.getItem('pinnedSensor') || null;
 
+let otaPollTimer = null;
+
 // ============================================================================
 // Initialization
 // ============================================================================
@@ -29,10 +31,106 @@ document.addEventListener('DOMContentLoaded', () => {
     connectWebSocket();
     loadStatus();
     loadConfigurations();
+    loadOtaInfo();
     
     // Periodic status update
     setInterval(loadStatus, STATUS_UPDATE_INTERVAL);
 });
+
+// ============================================================================
+// OTA (GitHub Releases)
+// ============================================================================
+
+async function loadOtaInfo() {
+    try {
+        const info = await apiGet('ota/info');
+        document.getElementById('otaCurrent').textContent = info.current || '--';
+        document.getElementById('otaAvailable').textContent = (info.latest && info.latest.tag) ? info.latest.tag : '--';
+
+        const readme = (info.latest && info.latest.readme) ? info.latest.readme : '';
+        const notes = (info.latest && info.latest.notes) ? info.latest.notes : '';
+        document.getElementById('otaReadme').textContent = readme || notes || '--';
+
+        if (info.error) {
+            document.getElementById('otaStatus').textContent = `Error: ${info.error}`;
+        } else {
+            document.getElementById('otaStatus').textContent = info.updateAvailable ? 'Update available' : 'Up to date';
+        }
+        document.getElementById('otaProgress').textContent = '--';
+
+        const btn = document.getElementById('otaUpdateBtn');
+        btn.disabled = !info.updateAvailable;
+        btn.textContent = info.updateAvailable ? '⬆️ Flash Update' : 'Up to date';
+    } catch (e) {
+        document.getElementById('otaStatus').textContent = 'Error: unable to load OTA info';
+    }
+}
+
+function checkOta() {
+    loadOtaInfo();
+}
+
+async function startOtaUpdate() {
+    const confirmMsg = 'This will update firmware and web UI, then reboot the device. Continue?';
+    if (!confirm(confirmMsg)) return;
+
+    const btn = document.getElementById('otaUpdateBtn');
+    btn.disabled = true;
+    btn.textContent = 'Starting...';
+    document.getElementById('otaStatus').textContent = 'Starting update...';
+
+    try {
+        await apiPost('ota/update', { target: 'both' });
+        startOtaPolling();
+    } catch (e) {
+        document.getElementById('otaStatus').textContent = 'Error: failed to start OTA';
+        btn.disabled = false;
+        btn.textContent = '⬆️ Flash Update';
+    }
+}
+
+function startOtaPolling() {
+    stopOtaPolling();
+    otaPollTimer = setInterval(loadOtaStatus, 2000);
+    loadOtaStatus();
+}
+
+function stopOtaPolling() {
+    if (otaPollTimer) {
+        clearInterval(otaPollTimer);
+        otaPollTimer = null;
+    }
+}
+
+async function loadOtaStatus() {
+    try {
+        const st = await apiGet('ota/status');
+        document.getElementById('otaStatus').textContent = st.state || '--';
+        document.getElementById('otaProgress').textContent = (typeof st.progress === 'number') ? `${st.progress}%` : '--';
+
+        if (st.error) {
+            document.getElementById('otaStatus').textContent = `Error: ${st.error}`;
+            stopOtaPolling();
+            await loadOtaInfo();
+            return;
+        }
+
+        if (st.state === 'idle' || st.state === 'ready') {
+            stopOtaPolling();
+            await loadOtaInfo();
+            return;
+        }
+
+        if (st.state === 'rebooting') {
+            stopOtaPolling();
+            document.getElementById('otaStatus').textContent = 'Rebooting...';
+            document.getElementById('otaProgress').textContent = '100%';
+        }
+    } catch (e) {
+        // During reboot the device will go offline; stop polling quietly.
+        stopOtaPolling();
+    }
+}
 
 // ============================================================================
 // Tab Navigation
