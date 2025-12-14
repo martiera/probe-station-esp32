@@ -79,6 +79,11 @@ public:
     void disconnect();
     
     /**
+     * Set OTA mode - disables all MQTT operations
+     */
+    void setOtaMode(bool enabled);
+    
+    /**
      * Publish all sensor temperatures
      */
     void publishTemperatures();
@@ -129,6 +134,7 @@ private:
     char _lastError[64];
     bool _haDiscoveryPublished;
     volatile bool _reconnectRequested;
+    volatile bool _otaInProgress;
     
     /**
      * Attempt to connect to MQTT broker

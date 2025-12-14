@@ -23,7 +23,8 @@ MQTTClient::MQTTClient() :
     _lastPublishTime(0),
     _publishCount(0),
     _haDiscoveryPublished(false),
-    _reconnectRequested(false) {
+    _reconnectRequested(false),
+    _otaInProgress(false) {
     _lastError[0] = '\0';
     
     for (uint8_t i = 0; i < MAX_SENSORS; i++) {
@@ -47,7 +48,19 @@ void MQTTClient::begin() {
     _client.setBufferSize(512);
 }
 
+void MQTTClient::setOtaMode(bool enabled) {
+    _otaInProgress = enabled;
+    if (enabled && _client.connected()) {
+        _client.disconnect();
+    }
+}
+
 void MQTTClient::update() {
+    // Completely disable MQTT during OTA updates
+    if (_otaInProgress) {
+        return;
+    }
+    
     if (!isEnabled()) {
         return;
     }
@@ -55,11 +68,12 @@ void MQTTClient::update() {
     // Handle reconnect request from web handlers (thread-safe)
     if (_reconnectRequested) {
         _reconnectRequested = false;
-        _lastConnectAttempt = 0;
+        _lastConnectAttempt = millis(); // Set to now to delay reconnect
         _haDiscoveryPublished = false;
         if (_client.connected()) {
             _client.disconnect();
         }
+        return; // Skip this update cycle to let disconnect complete
     }
     
     // Check WiFi connection
@@ -275,8 +289,16 @@ bool MQTTClient::connect() {
     const MQTTConfig& config = configManager.getMQTTConfig();
     const SystemConfig& sysConfig = configManager.getSystemConfig();
     
+    // Validate config before attempting connection
+    if (strlen(config.server) == 0) {
+        Serial.println(F("[MQTT] No server configured"));
+        return false;
+    }
+    
     Serial.printf("[MQTT] Connecting to %s:%d\n", config.server, config.port);
     
+    // Ensure client is properly set up with the WiFi client
+    _client.setClient(_wifiClient);
     _client.setServer(config.server, config.port);
     
     // Generate client ID

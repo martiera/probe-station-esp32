@@ -305,8 +305,12 @@ void WebServer::setupRoutes() {
 }
 
 void WebServer::setupStaticFiles() {
-    // Serve static files from SPIFFS
-    _server.serveStatic("/", SPIFFS, "/").setDefaultFile("index.html");
+    // Serve static files from SPIFFS with caching
+    // Cache for 1 hour (browser will use cached version, reducing memory pressure)
+    // AsyncWebServer automatically serves .gz versions if they exist
+    _server.serveStatic("/", SPIFFS, "/")
+        .setDefaultFile("index.html")
+        .setCacheControl("max-age=3600");
 }
 
 // ============================================================================
@@ -798,6 +802,13 @@ void WebServer::handleGetOtaInfo(AsyncWebServerRequest* request) {
     doc["current"] = FIRMWARE_VERSION;
     doc["github"]["owner"] = GITHUB_OWNER;
     doc["github"]["repo"] = GITHUB_REPO;
+    
+    // Add partition and memory info
+    OTAPartitionInfo partInfo = OTAManager::getPartitionInfo();
+    doc["partition"]["firmware"] = partInfo.firmwarePartitionSize;
+    doc["partition"]["spiffs"] = partInfo.spiffsPartitionSize;
+    doc["memory"]["freeHeap"] = partInfo.freeHeap;
+    doc["memory"]["minFreeHeap"] = partInfo.minFreeHeap;
 
     // If OTA is disabled, still return current version so the UI can render.
     if (!configManager.getSystemConfig().otaEnabled) {
@@ -812,8 +823,10 @@ void WebServer::handleGetOtaInfo(AsyncWebServerRequest* request) {
     }
 
     // Kick off a refresh in the background (non-blocking).
+    // Check for force parameter (e.g., ?force=1 from check button)
+    bool force = request->hasParam("force") && request->getParam("force")->value() == "1";
     String err;
-    otaManager.ensureReleaseInfoFresh(false, err);
+    otaManager.ensureReleaseInfoFresh(force, err);
 
     OTAProgress p = otaManager.getProgress();
     doc["state"] = otaStateToString(p.state);

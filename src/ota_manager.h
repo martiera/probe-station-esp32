@@ -43,6 +43,14 @@ struct OTAProgress {
     char error[96] = {0};
 };
 
+struct OTAPartitionInfo {
+    size_t firmwarePartitionSize = 0;
+    size_t spiffsPartitionSize = 0;
+    size_t currentFirmwareSize = 0;
+    size_t freeHeap = 0;
+    size_t minFreeHeap = 0;
+};
+
 class OTAManager {
 public:
     OTAManager();
@@ -58,6 +66,12 @@ public:
     bool isBusy() const;
 
     bool startUpdate(OTATarget target, String& error);
+    
+    // Call from main loop - handles periodic background checks
+    void update();
+    
+    // Get partition and memory info for pre-flight checks
+    static OTAPartitionInfo getPartitionInfo();
 
 private:
     OTAReleaseInfo _release;
@@ -68,6 +82,7 @@ private:
 
     TaskHandle_t _task;
     TaskHandle_t _checkTask;
+    uint32_t _lastAutoCheck = 0;
 
     void setProgress(OTAState state, int progressPercent, const char* message, const char* error = nullptr);
 

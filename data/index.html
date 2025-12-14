@@ -28,6 +28,18 @@
             </div>
         </header>
 
+        <!-- Update Notification Banner -->
+        <div class="update-banner" id="updateBanner" style="display: none;">
+            <div class="update-banner-content">
+                <span class="update-icon">🚀</span>
+                <span class="update-text">
+                    <strong>New version available:</strong> <span id="updateVersion"></span>
+                </span>
+                <button class="btn btn-primary btn-sm" onclick="goToUpdatePage()">Update Now</button>
+                <button class="btn-close" onclick="dismissUpdateBanner()">✕</button>
+            </div>
+        </div>
+
         <!-- Desktop Navigation Tabs -->
         <nav class="tabs">
             <button class="tab active" data-tab="dashboard">📊 Dashboard</button>
@@ -362,6 +374,20 @@
                 <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                 <button class="btn btn-primary" onclick="saveSensor()">Save</button>
             </div>
+        </div>
+    </div>
+
+    <!-- OTA Update Modal Overlay -->
+    <div class="ota-overlay" id="otaOverlay" style="display: none;">
+        <div class="ota-modal">
+            <div class="ota-modal-icon">🚀</div>
+            <h2 class="ota-modal-title">Firmware Update</h2>
+            <div class="ota-modal-status" id="otaModalStatus">Preparing...</div>
+            <div class="ota-progress-bar">
+                <div class="ota-progress-fill" id="otaProgressFill" style="width: 0%"></div>
+            </div>
+            <div class="ota-modal-percent" id="otaModalPercent">0%</div>
+            <p class="ota-modal-warning">⚠️ Do not close this page or power off the device</p>
         </div>
     </div>
 

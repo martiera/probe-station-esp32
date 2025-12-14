@@ -30,6 +30,7 @@
 #include "mqtt_client.h"
 #include "web_server.h"
 #include "display_manager.h"
+#include "ota_manager.h"
 
 // ============================================================================
 // Global State
@@ -358,6 +359,7 @@ void loop() {
     // Handle OTA updates
     if (wifiManager.isConnected() && configManager.getSystemConfig().otaEnabled) {
         ArduinoOTA.handle();
+        otaManager.update(); // Daily background check for GitHub releases
     }
     
     // Save configuration if needed (debounced)

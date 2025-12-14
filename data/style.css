@@ -178,6 +178,75 @@ body {
     50% { opacity: 0.5; }
 }
 
+/* ============================================================================
+   Update Notification Banner
+   ============================================================================ */
+
+.update-banner {
+    background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
+    margin-bottom: var(--space-lg);
+    box-shadow: var(--shadow-lg);
+    animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.update-banner-content {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    flex-wrap: wrap;
+}
+
+.update-icon {
+    font-size: 1.5rem;
+}
+
+.update-text {
+    flex: 1;
+    min-width: 200px;
+    color: var(--text-primary);
+}
+
+.update-text strong {
+    font-weight: 600;
+}
+
+.btn-close {
+    background: rgba(255, 255, 255, 0.2);
+    border: none;
+    color: var(--text-primary);
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1rem;
+    transition: var(--transition);
+}
+
+.btn-close:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+.btn-sm {
+    padding: var(--space-xs) var(--space-md);
+    font-size: 0.875rem;
+}
+
 /* Desktop Tabs - Hidden on mobile */
 .tabs {
     display: none;
@@ -879,6 +948,92 @@ body {
     gap: var(--space-md);
     padding: var(--space-lg);
     border-top: 1px solid var(--border-color);
+}
+
+/* OTA Update Overlay */
+.ota-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(15, 23, 42, 0.95);
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.ota-modal {
+    background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-card) 100%);
+    border-radius: var(--radius-xl);
+    padding: var(--space-xl);
+    text-align: center;
+    max-width: 400px;
+    width: 90%;
+    box-shadow: var(--shadow-lg), 0 0 60px rgba(59, 130, 246, 0.3);
+    border: 1px solid var(--border-color);
+}
+
+.ota-modal-icon {
+    font-size: 4rem;
+    margin-bottom: var(--space-md);
+    animation: bounce 2s infinite;
+}
+
+@keyframes bounce {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-10px); }
+}
+
+.ota-modal-title {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-bottom: var(--space-md);
+    background: linear-gradient(135deg, var(--primary-light) 0%, var(--primary) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.ota-modal-status {
+    color: var(--text-secondary);
+    font-size: 1rem;
+    margin-bottom: var(--space-lg);
+}
+
+.ota-progress-bar {
+    height: 12px;
+    background: var(--bg-input);
+    border-radius: 6px;
+    overflow: hidden;
+    margin-bottom: var(--space-sm);
+}
+
+.ota-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary) 0%, var(--success) 100%);
+    border-radius: 6px;
+    transition: width 0.3s ease;
+}
+
+.ota-modal-percent {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--primary-light);
+    margin-bottom: var(--space-md);
+}
+
+.ota-modal-warning {
+    color: var(--warning);
+    font-size: 0.875rem;
+    margin: 0;
 }
 
 /* Toast Notifications */

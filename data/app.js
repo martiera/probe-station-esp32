@@ -47,12 +47,17 @@ function safeLocalStorageRemove(key) {
 pinnedSensorAddress = safeLocalStorageGet('pinnedSensor') || null;
 
 let otaPollTimer = null;
+let otaLastProgress = -1;
+let otaLastProgressTime = 0;
+const OTA_PROGRESS_TIMEOUT_MS = 60000; // 1 minute timeout if no progress
 
 // ============================================================================
 // Initialization
 // ============================================================================
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Check if OTA was in progress (for cross-client/tab sync)
+    checkAndRestoreOtaOverlay();
     initTabs();
     connectWebSocket();
     loadStatus().then(() => {
@@ -61,6 +66,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     loadConfigurations();
     loadOtaInfo();
+    
+    // Check for updates and show banner if available
+    checkForUpdates();
     
     // Periodic status update
     setInterval(loadStatus, STATUS_UPDATE_INTERVAL);
@@ -72,9 +80,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
 let otaCheckTimer = null;
 
-async function loadOtaInfo() {
+async function loadOtaInfo(force = false) {
     try {
-        const info = await apiGet('ota/info');
+        const url = force ? 'ota/info?force=1' : 'ota/info';
+        const info = await apiGet(url);
         document.getElementById('otaCurrent').textContent = info.current || '--';
         document.getElementById('otaAvailable').textContent = (info.latest && info.latest.tag) ? info.latest.tag : '--';
 
@@ -107,6 +116,12 @@ async function loadOtaInfo() {
         const btn = document.getElementById('otaUpdateBtn');
         btn.disabled = !info.updateAvailable;
         btn.textContent = info.updateAvailable ? '⬆️ Flash Update' : 'Up to date';
+        
+        // If new update available, clear dismissed flag so banner shows
+        if (info.updateAvailable) {
+            safeLocalStorageRemove('updateBannerDismissed');
+            showUpdateBannerIfAvailable();
+        }
     } catch (e) {
         const msg = (e && e.message) ? e.message : 'unable to load OTA info';
         document.getElementById('otaStatus').textContent = `Error: ${msg}`;
@@ -122,7 +137,7 @@ function checkOta() {
     // Show immediate feedback
     document.getElementById('otaStatus').textContent = 'Checking for updates...';
     document.getElementById('otaAvailable').textContent = '--';
-    loadOtaInfo();
+    loadOtaInfo(true); // Force check
 }
 
 async function startOtaUpdate() {
@@ -136,6 +151,7 @@ async function startOtaUpdate() {
 
     try {
         await apiPost('ota/update', { target: 'both' });
+        showOtaOverlay();
         startOtaPolling();
     } catch (e) {
         document.getElementById('otaStatus').textContent = 'Error: failed to start OTA';
@@ -144,9 +160,48 @@ async function startOtaUpdate() {
     }
 }
 
+function showOtaOverlay() {
+    document.getElementById('otaOverlay').style.display = 'flex';
+    document.getElementById('otaModalStatus').textContent = 'Preparing...';
+    document.getElementById('otaModalPercent').textContent = '0%';
+    document.getElementById('otaProgressFill').style.width = '0%';
+    // Mark OTA in progress for cross-client sync
+    safeLocalStorageSet('otaInProgress', 'true');
+    safeLocalStorageSet('otaStartTime', Date.now().toString());
+    // Reset progress tracking
+    otaLastProgress = -1;
+    otaLastProgressTime = Date.now();
+}
+
+function hideOtaOverlay() {
+    document.getElementById('otaOverlay').style.display = 'none';
+    // Clear OTA progress flag
+    safeLocalStorageRemove('otaInProgress');
+    safeLocalStorageRemove('otaStartTime');
+}
+
+// Check if OTA was in progress when page loaded (for cross-client sync)
+function checkAndRestoreOtaOverlay() {
+    const inProgress = safeLocalStorageGet('otaInProgress');
+    if (inProgress === 'true') {
+        // OTA was in progress, show overlay and start polling
+        document.getElementById('otaOverlay').style.display = 'flex';
+        document.getElementById('otaModalStatus').textContent = 'Connecting...';
+        otaLastProgress = -1;
+        otaLastProgressTime = Date.now();
+        startOtaPolling();
+    }
+}
+
+function updateOtaOverlay(status, progress) {
+    document.getElementById('otaModalStatus').textContent = status;
+    document.getElementById('otaModalPercent').textContent = `${progress}%`;
+    document.getElementById('otaProgressFill').style.width = `${progress}%`;
+}
+
 function startOtaPolling() {
     stopOtaPolling();
-    otaPollTimer = setInterval(loadOtaStatus, 2000);
+    otaPollTimer = setInterval(loadOtaStatus, 1000); // Poll every 1 second for smoother updates
     loadOtaStatus();
 }
 
@@ -157,39 +212,172 @@ function stopOtaPolling() {
     }
 }
 
+let otaRebootCheckTimer = null;
+
 async function loadOtaStatus() {
     try {
         const st = await apiGet('ota/status');
         document.getElementById('otaStatus').textContent = st.state || '--';
         document.getElementById('otaProgress').textContent = (typeof st.progress === 'number') ? `${st.progress}%` : '--';
+        
+        // Update the overlay
+        const statusText = st.message || st.state || 'Updating...';
+        const progress = (typeof st.progress === 'number') ? st.progress : 0;
+        updateOtaOverlay(statusText, progress);
+
+        // Check for progress timeout (1 minute without progress change)
+        if (progress > otaLastProgress) {
+            // Progress increased, reset timeout
+            otaLastProgress = progress;
+            otaLastProgressTime = Date.now();
+        } else if (st.state && st.state.includes('download')) {
+            // Only check timeout during download phase
+            const elapsed = Date.now() - otaLastProgressTime;
+            if (elapsed > OTA_PROGRESS_TIMEOUT_MS) {
+                // No progress for 1 minute, likely stuck
+                document.getElementById('otaStatus').textContent = 'Error: Download stalled';
+                updateOtaOverlay('Download stalled - no progress for 1 minute', progress);
+                stopOtaPolling();
+                setTimeout(hideOtaOverlay, 5000);
+                await loadOtaInfo();
+                return;
+            }
+        }
 
         if (st.error) {
             document.getElementById('otaStatus').textContent = `Error: ${st.error}`;
+            updateOtaOverlay(`Error: ${st.error}`, progress);
             stopOtaPolling();
+            // Hide overlay after 3 seconds on error
+            setTimeout(hideOtaOverlay, 3000);
             await loadOtaInfo();
             return;
         }
 
         if (st.state === 'idle' || st.state === 'ready') {
             stopOtaPolling();
+            hideOtaOverlay();
             await loadOtaInfo();
             return;
         }
 
         if (st.state === 'rebooting') {
             stopOtaPolling();
+            updateOtaOverlay('Rebooting device...', 100);
             document.getElementById('otaStatus').textContent = 'Rebooting...';
             document.getElementById('otaProgress').textContent = '100%';
+            // Start checking if device comes back online
+            startRebootCheck();
         }
     } catch (e) {
-        // During reboot the device will go offline; stop polling quietly.
+        // During reboot the device will go offline; start checking for comeback
         stopOtaPolling();
+        updateOtaOverlay('Device rebooting...', 100);
+        startRebootCheck();
     }
+}
+
+function startRebootCheck() {
+    if (otaRebootCheckTimer) return;
+    
+    let attempts = 0;
+    const maxAttempts = 60; // Check for up to 60 seconds
+    
+    otaRebootCheckTimer = setInterval(async () => {
+        attempts++;
+        try {
+            const status = await apiGet('status');
+            // Device is back online!
+            clearInterval(otaRebootCheckTimer);
+            otaRebootCheckTimer = null;
+            
+            updateOtaOverlay('Update complete!', 100);
+            setTimeout(() => {
+                hideOtaOverlay();
+                showToast('Firmware updated successfully!', 'success');
+                loadOtaInfo();
+                loadStatus();
+            }, 1500);
+        } catch (e) {
+            // Still offline
+            updateOtaOverlay(`Waiting for device... (${attempts}s)`, 100);
+            
+            if (attempts >= maxAttempts) {
+                clearInterval(otaRebootCheckTimer);
+                otaRebootCheckTimer = null;
+                updateOtaOverlay('Device not responding. Please refresh page.', 100);
+            }
+        }
+    }, 1000);
+}
+
+// ============================================================================
+// Update Banner
+// ============================================================================
+
+function checkForUpdates() {
+    // Check for updates in background (shown on dashboard)
+    loadOtaInfo().then(() => {
+        showUpdateBannerIfAvailable();
+    }).catch(err => {
+        console.error('Failed to check for updates:', err);
+    });
+}
+
+function showUpdateBannerIfAvailable() {
+    // Only show if not dismissed and update is available
+    const dismissed = safeLocalStorageGet('updateBannerDismissed');
+    
+    // Don't show if dismissed for this session
+    if (dismissed === 'true') {
+        return;
+    }
+    
+    // Check if update is available from cached OTA info
+    apiGet('ota/info').then(info => {
+        const banner = document.getElementById('updateBanner');
+        const versionEl = document.getElementById('updateVersion');
+        
+        if (info.updateAvailable && info.latest && info.latest.tag) {
+            versionEl.textContent = info.latest.tag;
+            banner.style.display = 'block';
+        } else {
+            banner.style.display = 'none';
+        }
+    }).catch(() => {
+        // Silently ignore errors
+    });
+}
+
+function dismissUpdateBanner() {
+    document.getElementById('updateBanner').style.display = 'none';
+    safeLocalStorageSet('updateBannerDismissed', 'true');
+}
+
+function goToUpdatePage() {
+    // Switch to settings tab
+    switchToTab('settings');
+    // Scroll to OTA section if needed
+    setTimeout(() => {
+        const otaSection = document.querySelector('#tab-settings .section:last-of-type');
+        if (otaSection) {
+            otaSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    }, 100);
 }
 
 // ============================================================================
 // Tab Navigation
 // ============================================================================
+
+function switchToTab(tabId) {
+    const tabs = document.querySelectorAll('.tab');
+    const tabButton = document.querySelector(`.tab[data-tab="${tabId}"]`);
+    
+    if (tabButton) {
+        tabButton.click();
+    }
+}
 
 function initTabs() {
     // Get tabs from both desktop nav and mobile nav
