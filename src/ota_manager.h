@@ -7,6 +7,7 @@
 #define OTA_MANAGER_H
 
 #include <Arduino.h>
+#include <freertos/semphr.h>
 
 enum class OTATarget : uint8_t {
     FIRMWARE,
@@ -46,8 +47,12 @@ class OTAManager {
 public:
     OTAManager();
 
-    bool refreshReleaseInfo(String& error);
-    const OTAReleaseInfo& getReleaseInfo() const { return _release; }
+    // Starts/refreshes GitHub release info in a background task (non-blocking).
+    // Returns true if info is already fresh or a refresh task is running/started.
+    bool ensureReleaseInfoFresh(bool force, String& error);
+
+    // Snapshot of the most recently fetched release info (thread-safe).
+    void getReleaseInfoCopy(OTAReleaseInfo& out) const;
 
     OTAProgress getProgress() const;
     bool isBusy() const;
@@ -56,19 +61,24 @@ public:
 
 private:
     OTAReleaseInfo _release;
+    SemaphoreHandle_t _releaseMutex;
 
     mutable OTAProgress _progress;
     mutable portMUX_TYPE _mux;
 
     TaskHandle_t _task;
+    TaskHandle_t _checkTask;
 
     void setProgress(OTAState state, int progressPercent, const char* message, const char* error = nullptr);
 
     static void taskThunk(void* arg);
     void runUpdateTask(OTATarget target);
 
-    bool fetchLatestReleaseFromGitHub(String& error);
-    bool fetchReadmeForTag(const String& tag, String& error);
+    static void checkThunk(void* arg);
+    void runCheckTask(bool force);
+
+    bool fetchLatestReleaseFromGitHub(OTAReleaseInfo& into, String& error);
+    bool fetchReadmeForTag(OTAReleaseInfo& into, const String& tag, String& error);
 
     bool downloadAndApply(const String& url, int updateCommand, const char* label, String& error);
 };

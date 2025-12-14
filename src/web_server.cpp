@@ -771,19 +771,33 @@ static const char* otaStateToString(OTAState state) {
 }
 
 void WebServer::handleGetOtaInfo(AsyncWebServerRequest* request) {
-    if (!configManager.getSystemConfig().otaEnabled) {
-        sendError(request, 403, "OTA disabled");
-        return;
-    }
-
-    String err;
-    otaManager.refreshReleaseInfo(err);
-    const OTAReleaseInfo& info = otaManager.getReleaseInfo();
-
     JsonDocument doc;
     doc["current"] = FIRMWARE_VERSION;
     doc["github"]["owner"] = GITHUB_OWNER;
     doc["github"]["repo"] = GITHUB_REPO;
+
+    // If OTA is disabled, still return current version so the UI can render.
+    if (!configManager.getSystemConfig().otaEnabled) {
+        doc["updateAvailable"] = false;
+        doc["configPreserved"] = true;
+        doc["error"] = "OTA disabled";
+
+        String out;
+        serializeJson(doc, out);
+        sendJson(request, 200, out.c_str());
+        return;
+    }
+
+    // Kick off a refresh in the background (non-blocking).
+    String err;
+    otaManager.ensureReleaseInfoFresh(false, err);
+
+    OTAProgress p = otaManager.getProgress();
+    doc["state"] = otaStateToString(p.state);
+    doc["statusMessage"] = p.message;
+
+    OTAReleaseInfo info;
+    otaManager.getReleaseInfoCopy(info);
 
     doc["latest"]["tag"] = info.tag;
     doc["latest"]["name"] = info.name;
@@ -797,7 +811,9 @@ void WebServer::handleGetOtaInfo(AsyncWebServerRequest* request) {
     bool updateAvailable = (info.tag.length() > 0) && (String(FIRMWARE_VERSION) != info.tag);
     doc["updateAvailable"] = updateAvailable;
 
-    if (err.length() > 0) {
+    if (p.error[0] != '\0') {
+        doc["error"] = p.error;
+    } else if (err.length() > 0) {
         doc["error"] = err;
     }
 

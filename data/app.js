@@ -18,7 +18,33 @@ let websocket = null;
 let sensors = [];
 let systemStatus = null;
 let reconnectTimer = null;
-let pinnedSensorAddress = localStorage.getItem('pinnedSensor') || null;
+let pinnedSensorAddress = null;
+
+function safeLocalStorageGet(key) {
+    try {
+        return localStorage.getItem(key);
+    } catch (_) {
+        return null;
+    }
+}
+
+function safeLocalStorageSet(key, value) {
+    try {
+        localStorage.setItem(key, value);
+    } catch (_) {
+        // ignore (some captive-portal webviews disable storage)
+    }
+}
+
+function safeLocalStorageRemove(key) {
+    try {
+        localStorage.removeItem(key);
+    } catch (_) {
+        // ignore
+    }
+}
+
+pinnedSensorAddress = safeLocalStorageGet('pinnedSensor') || null;
 
 let otaPollTimer = null;
 
@@ -41,20 +67,37 @@ document.addEventListener('DOMContentLoaded', () => {
 // OTA (GitHub Releases)
 // ============================================================================
 
+let otaCheckTimer = null;
+
 async function loadOtaInfo() {
     try {
         const info = await apiGet('ota/info');
         document.getElementById('otaCurrent').textContent = info.current || '--';
         document.getElementById('otaAvailable').textContent = (info.latest && info.latest.tag) ? info.latest.tag : '--';
 
-        const readme = (info.latest && info.latest.readme) ? info.latest.readme : '';
-        const notes = (info.latest && info.latest.notes) ? info.latest.notes : '';
-        document.getElementById('otaReadme').textContent = readme || notes || '--';
-
-        if (info.error) {
-            document.getElementById('otaStatus').textContent = `Error: ${info.error}`;
+        if (info.state === 'checking') {
+            document.getElementById('otaStatus').textContent = info.statusMessage || 'Checking...';
+            // Poll every 2s while checking
+            if (!otaCheckTimer) {
+                otaCheckTimer = setTimeout(() => {
+                    otaCheckTimer = null;
+                    loadOtaInfo();
+                }, 2000);
+            }
         } else {
-            document.getElementById('otaStatus').textContent = info.updateAvailable ? 'Update available' : 'Up to date';
+            // Stop polling when check completes
+            if (otaCheckTimer) {
+                clearTimeout(otaCheckTimer);
+                otaCheckTimer = null;
+            }
+            
+            if (info.error) {
+                document.getElementById('otaStatus').textContent = `Error: ${info.error}`;
+            } else if (info.statusMessage) {
+                document.getElementById('otaStatus').textContent = info.statusMessage;
+            } else {
+                document.getElementById('otaStatus').textContent = info.updateAvailable ? 'Update available' : 'Up to date';
+            }
         }
         document.getElementById('otaProgress').textContent = '--';
 
@@ -62,11 +105,20 @@ async function loadOtaInfo() {
         btn.disabled = !info.updateAvailable;
         btn.textContent = info.updateAvailable ? '⬆️ Flash Update' : 'Up to date';
     } catch (e) {
-        document.getElementById('otaStatus').textContent = 'Error: unable to load OTA info';
+        const msg = (e && e.message) ? e.message : 'unable to load OTA info';
+        document.getElementById('otaStatus').textContent = `Error: ${msg}`;
+        // Stop polling on error
+        if (otaCheckTimer) {
+            clearTimeout(otaCheckTimer);
+            otaCheckTimer = null;
+        }
     }
 }
 
 function checkOta() {
+    // Show immediate feedback
+    document.getElementById('otaStatus').textContent = 'Checking for updates...';
+    document.getElementById('otaAvailable').textContent = '--';
     loadOtaInfo();
 }
 
@@ -217,10 +269,18 @@ function handleWebSocketMessage(data) {
 
 async function apiGet(endpoint) {
     const response = await fetch(`/api/${endpoint}`);
-    if (!response.ok) {
-        throw new Error(`API error: ${response.status}`);
+    const text = await response.text();
+    let payload = null;
+    try {
+        payload = text ? JSON.parse(text) : null;
+    } catch (_) {
+        payload = null;
     }
-    return response.json();
+    if (!response.ok) {
+        const msg = (payload && payload.message) ? payload.message : `API error: ${response.status}`;
+        throw new Error(msg);
+    }
+    return payload;
 }
 
 async function apiPost(endpoint, data = {}) {
@@ -229,7 +289,18 @@ async function apiPost(endpoint, data = {}) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
     });
-    return response.json();
+    const text = await response.text();
+    let payload = null;
+    try {
+        payload = text ? JSON.parse(text) : null;
+    } catch (_) {
+        payload = null;
+    }
+    if (!response.ok) {
+        const msg = (payload && payload.message) ? payload.message : `API error: ${response.status}`;
+        throw new Error(msg);
+    }
+    return payload;
 }
 
 async function apiPut(endpoint, data) {
@@ -238,7 +309,18 @@ async function apiPut(endpoint, data) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
     });
-    return response.json();
+    const text = await response.text();
+    let payload = null;
+    try {
+        payload = text ? JSON.parse(text) : null;
+    } catch (_) {
+        payload = null;
+    }
+    if (!response.ok) {
+        const msg = (payload && payload.message) ? payload.message : `API error: ${response.status}`;
+        throw new Error(msg);
+    }
+    return payload;
 }
 
 // ============================================================================
@@ -477,9 +559,9 @@ function savePinnedSensor() {
     pinnedSensorAddress = select.value || null;
     
     if (pinnedSensorAddress) {
-        localStorage.setItem('pinnedSensor', pinnedSensorAddress);
+        safeLocalStorageSet('pinnedSensor', pinnedSensorAddress);
     } else {
-        localStorage.removeItem('pinnedSensor');
+        safeLocalStorageRemove('pinnedSensor');
     }
     
     closePinDialog();

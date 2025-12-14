@@ -18,7 +18,7 @@ OTAManager otaManager;
 
 namespace {
 constexpr uint32_t RELEASE_INFO_TTL_MS = 5UL * 60UL * 1000UL; // 5 min
-constexpr uint32_t HTTP_TIMEOUT_MS = 20000;
+constexpr uint32_t HTTP_TIMEOUT_MS = 15000;
 
 String normalizeTagToVersion(String tag) {
     tag.trim();
@@ -64,7 +64,7 @@ bool httpGetToString(const String& url, String& out, String& error, size_t maxBy
     http.addHeader("User-Agent", "probe-station-esp32");
     int code = http.GET();
     if (code <= 0) {
-        error = "HTTP GET failed";
+        error = String("HTTP GET failed: ") + http.errorToString(code);
         http.end();
         return false;
     }
@@ -80,7 +80,8 @@ bool httpGetToString(const String& url, String& out, String& error, size_t maxBy
 
     uint8_t buf[512];
     size_t total = 0;
-    while (http.connected()) {
+    uint32_t startMs = millis();
+    while (http.connected() && (millis() - startMs) < HTTP_TIMEOUT_MS) {
         int avail = stream->available();
         if (avail <= 0) {
             delay(1);
@@ -101,16 +102,33 @@ bool httpGetToString(const String& url, String& out, String& error, size_t maxBy
     }
 
     http.end();
+    
+    if (total == 0) {
+        error = "No data received";
+        return false;
+    }
     return true;
 }
 }
 
 OTAManager::OTAManager() : _mux(portMUX_INITIALIZER_UNLOCKED), _task(nullptr) {
+    _releaseMutex = xSemaphoreCreateMutex();
+    _checkTask = nullptr;
     _progress.state = OTAState::IDLE;
     _progress.target = OTATarget::BOTH;
     _progress.progressPercent = 0;
     _progress.message[0] = '\0';
     _progress.error[0] = '\0';
+}
+
+void OTAManager::getReleaseInfoCopy(OTAReleaseInfo& out) const {
+    if (_releaseMutex && xSemaphoreTake(_releaseMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        out = _release;
+        xSemaphoreGive(_releaseMutex);
+        return;
+    }
+    // If mutex can't be acquired quickly, return an empty snapshot.
+    out = OTAReleaseInfo{};
 }
 
 void OTAManager::setProgress(OTAState state, int progressPercent, const char* message, const char* error) {
@@ -143,48 +161,89 @@ bool OTAManager::isBusy() const {
     return p.state == OTAState::CHECKING || p.state == OTAState::UPDATING_FIRMWARE || p.state == OTAState::UPDATING_SPIFFS || p.state == OTAState::REBOOTING;
 }
 
-bool OTAManager::refreshReleaseInfo(String& error) {
-    if (_release.fetchedAtMs != 0 && (millis() - _release.fetchedAtMs) < RELEASE_INFO_TTL_MS) {
+bool OTAManager::ensureReleaseInfoFresh(bool force, String& error) {
+    // Don't start a check while an update is running.
+    OTAProgress p = getProgress();
+    if (p.state == OTAState::UPDATING_FIRMWARE || p.state == OTAState::UPDATING_SPIFFS || p.state == OTAState::REBOOTING) {
+        error = "OTA busy";
+        return false;
+    }
+
+    // Already checking
+    if (p.state == OTAState::CHECKING) {
+        return true;
+    }
+
+    // If we have fresh info and not forced, nothing to do.
+    uint32_t fetchedAt = 0;
+    if (_releaseMutex && xSemaphoreTake(_releaseMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        fetchedAt = _release.fetchedAtMs;
+        xSemaphoreGive(_releaseMutex);
+    }
+    if (!force && fetchedAt != 0 && (millis() - fetchedAt) < RELEASE_INFO_TTL_MS) {
+        return true;
+    }
+
+    // Start background check task
+    if (_checkTask != nullptr) {
         return true;
     }
 
     setProgress(OTAState::CHECKING, 0, "Checking GitHub releases...");
-
-    if (!fetchLatestReleaseFromGitHub(error)) {
+    // Pin to core 0 to avoid starving AsyncTCP (typically pinned to core 1).
+    BaseType_t ok = xTaskCreatePinnedToCore(checkThunk, "ota_check", 8192, this, 1, &_checkTask, 0);
+    if (ok != pdPASS) {
+        _checkTask = nullptr;
+        error = "Failed to start OTA check task";
         setProgress(OTAState::ERROR, 0, "OTA: failed to check releases", error.c_str());
         return false;
     }
-
-    String readmeErr;
-    fetchReadmeForTag(_release.tag, readmeErr);
-
-    setProgress(OTAState::READY, 0, "OTA: update info ready");
     return true;
 }
 
-bool OTAManager::fetchLatestReleaseFromGitHub(String& error) {
-    WiFiClientSecure client;
-    client.setInsecure();
-    client.setTimeout(HTTP_TIMEOUT_MS / 1000);
+void OTAManager::checkThunk(void* arg) {
+    OTAManager* self = reinterpret_cast<OTAManager*>(arg);
+    self->runCheckTask(false);
+    vTaskDelete(nullptr);
+}
 
-    HTTPClient http;
-    http.setTimeout(HTTP_TIMEOUT_MS);
+void OTAManager::runCheckTask(bool force) {
+    (void)force;
+    String err;
+    OTAReleaseInfo next;
 
-    const String url = githubApiLatestReleaseUrl();
-    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    Serial.println("[OTA] Check task started");
 
-    if (!http.begin(client, url)) {
-        error = "HTTP begin failed";
-        return false;
+    if (!fetchLatestReleaseFromGitHub(next, err)) {
+        Serial.printf("[OTA] GitHub fetch failed: %s\n", err.c_str());
+        setProgress(OTAState::ERROR, 0, "Failed to fetch release", err.c_str());
+        _checkTask = nullptr;
+        return;
     }
 
-    http.addHeader("User-Agent", "probe-station-esp32");
-    http.addHeader("Accept", "application/vnd.github+json");
+    Serial.printf("[OTA] Found release: %s\n", next.tag.c_str());
 
-    int code = http.GET();
-    if (code != HTTP_CODE_OK) {
-        error = String("GitHub API HTTP ") + code;
-        http.end();
+    // Only fetch README if release body is empty (saves ~20s HTTPS fetch)
+    if (next.body.length() == 0) {
+        String readmeErr;
+        fetchReadmeForTag(next, next.tag, readmeErr);
+    }
+
+    next.fetchedAtMs = millis();
+    if (_releaseMutex && xSemaphoreTake(_releaseMutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
+        _release = next;
+        xSemaphoreGive(_releaseMutex);
+    }
+
+    Serial.println("[OTA] Check complete");
+    setProgress(OTAState::READY, 0, "Update info ready");
+    _checkTask = nullptr;
+}
+
+bool OTAManager::fetchLatestReleaseFromGitHub(OTAReleaseInfo& into, String& error) {
+    // Read into a bounded string with yields to avoid starving AsyncTCP/loop WDT.
+    String payload;
+    if (!httpGetToString(githubApiLatestReleaseUrl(), payload, error, 32 * 1024)) {
         return false;
     }
 
@@ -197,8 +256,7 @@ bool OTAManager::fetchLatestReleaseFromGitHub(String& error) {
     filter["assets"][0]["browser_download_url"] = true;
 
     JsonDocument doc;
-    DeserializationError derr = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
-    http.end();
+    DeserializationError derr = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
 
     if (derr) {
         error = String("JSON parse error: ") + derr.c_str();
@@ -211,11 +269,12 @@ bool OTAManager::fetchLatestReleaseFromGitHub(String& error) {
         return false;
     }
 
-    _release.tag = normalizeTagToVersion(tag);
-    _release.name = (const char*)(doc["name"] | "");
-    _release.body = (const char*)(doc["body"] | "");
-    _release.firmwareUrl = "";
-    _release.spiffsUrl = "";
+    into.tag = normalizeTagToVersion(tag);
+    into.name = (const char*)(doc["name"] | "");
+    into.body = (const char*)(doc["body"] | "");
+    into.firmwareUrl = "";
+    into.spiffsUrl = "";
+    into.readme = "";
 
     if (doc["assets"].is<JsonArrayConst>()) {
         for (JsonObjectConst a : doc["assets"].as<JsonArrayConst>()) {
@@ -223,23 +282,21 @@ bool OTAManager::fetchLatestReleaseFromGitHub(String& error) {
             String aurl = (const char*)(a["browser_download_url"] | "");
             aname.toLowerCase();
             if (aname == "firmware.bin") {
-                _release.firmwareUrl = aurl;
+                into.firmwareUrl = aurl;
             } else if (aname == "spiffs.bin") {
-                _release.spiffsUrl = aurl;
+                into.spiffsUrl = aurl;
             }
         }
     }
-
-    _release.fetchedAtMs = millis();
     return true;
 }
 
-bool OTAManager::fetchReadmeForTag(const String& tag, String& error) {
+bool OTAManager::fetchReadmeForTag(OTAReleaseInfo& into, const String& tag, String& error) {
     String out;
     if (!httpGetToString(githubRawReadmeUrl(tag), out, error, 24 * 1024)) {
         return false;
     }
-    _release.readme = out;
+    into.readme = out;
     return true;
 }
 
@@ -310,6 +367,9 @@ bool OTAManager::downloadAndApply(const String& url, int updateCommand, const ch
             http.end();
             return false;
         }
+
+        // Yield to keep the system responsive.
+        delay(0);
     }
 
     if (!Update.end(true)) {
@@ -328,25 +388,40 @@ bool OTAManager::startUpdate(OTATarget target, String& error) {
         return false;
     }
 
-    // Ensure we have release info
-    String infoErr;
-    if (!refreshReleaseInfo(infoErr)) {
-        error = infoErr;
+    // Never do a blocking GitHub check here (this is typically called from a web handler).
+    OTAProgress p = getProgress();
+    if (p.state == OTAState::CHECKING) {
+        error = "Checking for updates, please wait";
         return false;
     }
 
-    if (_release.tag.length() > 0 && String(FIRMWARE_VERSION) == _release.tag) {
+    OTAReleaseInfo info;
+    getReleaseInfoCopy(info);
+    if (info.tag.length() == 0) {
+        String tmp;
+        ensureReleaseInfoFresh(false, tmp);
+        error = "Update info not ready. Press Check first.";
+        return false;
+    }
+
+    if (String(FIRMWARE_VERSION) == info.tag) {
         error = "Already up to date";
         return false;
     }
 
-    if ((target == OTATarget::FIRMWARE || target == OTATarget::BOTH) && _release.firmwareUrl.length() == 0) {
+    if ((target == OTATarget::FIRMWARE || target == OTATarget::BOTH) && info.firmwareUrl.length() == 0) {
         error = "Release missing firmware.bin asset";
         return false;
     }
-    if ((target == OTATarget::SPIFFS || target == OTATarget::BOTH) && _release.spiffsUrl.length() == 0) {
+    if ((target == OTATarget::SPIFFS || target == OTATarget::BOTH) && info.spiffsUrl.length() == 0) {
         error = "Release missing spiffs.bin asset";
         return false;
+    }
+
+    // Copy URLs into the shared release struct for the update task to use.
+    if (_releaseMutex && xSemaphoreTake(_releaseMutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
+        _release = info;
+        xSemaphoreGive(_releaseMutex);
     }
 
     portENTER_CRITICAL(&_mux);
@@ -355,7 +430,8 @@ bool OTAManager::startUpdate(OTATarget target, String& error) {
     _progress.error[0] = '\0';
     portEXIT_CRITICAL(&_mux);
 
-    BaseType_t ok = xTaskCreatePinnedToCore(taskThunk, "ota_update", 8192, this, 1, &_task, 1);
+    // Pin to core 0 to avoid starving AsyncTCP on core 1.
+    BaseType_t ok = xTaskCreatePinnedToCore(taskThunk, "ota_update", 8192, this, 1, &_task, 0);
     if (ok != pdPASS) {
         error = "Failed to start OTA task";
         return false;
