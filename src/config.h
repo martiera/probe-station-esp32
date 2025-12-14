@@ -132,7 +132,7 @@ constexpr uint32_t CONFIG_SAVE_DEBOUNCE = 5000;
 // ============================================================================
 
 // Number of historical temperature readings to store per sensor
-constexpr uint16_t TEMP_HISTORY_SIZE = 60;  // 60 readings = ~2 minutes at 2s interval
+constexpr uint16_t TEMP_HISTORY_SIZE = 30;  // 30 readings = ~1 minute at 2s interval (saves ~1.2KB/sensor)
 
 // ============================================================================
 // Threshold Configuration

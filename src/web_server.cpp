@@ -776,12 +776,12 @@ void WebServer::handleGetHistory(AsyncWebServerRequest* request, uint8_t sensorI
     JsonDocument doc;
     JsonArray history = doc.to<JsonArray>();
     
-    // Output history from oldest to newest
+    // Output history from oldest to newest (convert from int16_t back to float)
     for (uint16_t i = 0; i < data->historyCount; i++) {
         uint16_t idx = (data->historyIndex - data->historyCount + i + TEMP_HISTORY_SIZE) 
                        % TEMP_HISTORY_SIZE;
-        if (data->history[idx] != TEMP_INVALID) {
-            history.add(data->history[idx]);
+        if (data->history[idx] != TEMP_HISTORY_INVALID) {
+            history.add(data->history[idx] / 100.0f);
         }
     }
     

@@ -506,7 +506,9 @@ void SensorManager::addToHistory(uint8_t index, float temp) {
         return;
     }
     
-    _sensorData[index].history[_sensorData[index].historyIndex] = temp;
+    // Store as int16_t (temp * 100) to save memory
+    int16_t historyValue = (temp == TEMP_INVALID) ? TEMP_HISTORY_INVALID : (int16_t)(temp * 100.0f);
+    _sensorData[index].history[_sensorData[index].historyIndex] = historyValue;
     _sensorData[index].historyIndex = (_sensorData[index].historyIndex + 1) % TEMP_HISTORY_SIZE;
     
     if (_sensorData[index].historyCount < TEMP_HISTORY_SIZE) {

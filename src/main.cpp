@@ -21,7 +21,6 @@
  */
 
 #include <Arduino.h>
-#include <ArduinoOTA.h>
 
 #include "config.h"
 #include "config_manager.h"
@@ -50,8 +49,6 @@ static const uint32_t LONG_PRESS_TIME = 800;  // 800ms for long press
 // ============================================================================
 // Forward Declarations
 // ============================================================================
-
-void setupOTA();
 
 // ============================================================================
 // Callback Handlers
@@ -131,49 +128,8 @@ void onWiFiStateChange(WiFiState oldState, WiFiState newState) {
         // Initialize MQTT
         mqttClient.begin();
         
-        // Initialize OTA
-        if (configManager.getSystemConfig().otaEnabled) {
-            setupOTA();
-        }
+        // GitHub OTA is handled via otaManager.update() in the main loop
     }
-}
-
-// ============================================================================
-// OTA Setup
-// ============================================================================
-
-void setupOTA() {
-    ArduinoOTA.setHostname(configManager.getSystemConfig().deviceName);
-    
-    ArduinoOTA.onStart([]() {
-        String type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
-        Serial.println("[OTA] Start updating " + type);
-        
-        // Stop services during update
-        mqttClient.disconnect();
-    });
-    
-    ArduinoOTA.onEnd([]() {
-        Serial.println(F("\n[OTA] Update complete"));
-    });
-    
-    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-        Serial.printf("[OTA] Progress: %u%%\r", (progress / (total / 100)));
-    });
-    
-    ArduinoOTA.onError([](ota_error_t error) {
-        Serial.printf("[OTA] Error[%u]: ", error);
-        switch (error) {
-            case OTA_AUTH_ERROR:    Serial.println(F("Auth Failed")); break;
-            case OTA_BEGIN_ERROR:   Serial.println(F("Begin Failed")); break;
-            case OTA_CONNECT_ERROR: Serial.println(F("Connect Failed")); break;
-            case OTA_RECEIVE_ERROR: Serial.println(F("Receive Failed")); break;
-            case OTA_END_ERROR:     Serial.println(F("End Failed")); break;
-        }
-    });
-    
-    ArduinoOTA.begin();
-    Serial.println(F("[OTA] OTA ready"));
 }
 
 // ============================================================================
@@ -360,9 +316,8 @@ void loop() {
     // Update web server (handles WebSocket updates)
     webServer.update();
     
-    // Handle OTA updates
+    // Handle OTA updates (GitHub releases only)
     if (wifiManager.isConnected() && configManager.getSystemConfig().otaEnabled) {
-        ArduinoOTA.handle();
         otaManager.update(); // Daily background check for GitHub releases
     }
     

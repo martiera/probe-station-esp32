@@ -35,12 +35,15 @@ enum class AlarmState {
 /**
  * Runtime sensor data (not persisted)
  */
+// Invalid temperature marker for int16_t history (INT16_MIN)
+constexpr int16_t TEMP_HISTORY_INVALID = -32768;
+
 struct SensorData {
     DeviceAddress address;                  // Raw sensor address
     char addressStr[SENSOR_ADDR_STR_LEN];   // Address as hex string
     float temperature;                       // Current calibrated temperature
     float rawTemperature;                    // Raw temperature (before calibration)
-    float history[TEMP_HISTORY_SIZE];        // Temperature history ring buffer
+    int16_t history[TEMP_HISTORY_SIZE];      // Temperature history (temp*100), saves ~50% RAM
     uint16_t historyIndex;                   // Current position in history buffer
     uint16_t historyCount;                   // Number of valid history entries
     AlarmState alarmState;                   // Current alarm state
@@ -62,7 +65,7 @@ struct SensorData {
         addressStr[0] = '\0';
         memset(address, 0, sizeof(address));
         for (uint16_t i = 0; i < TEMP_HISTORY_SIZE; i++) {
-            history[i] = TEMP_INVALID;
+            history[i] = TEMP_HISTORY_INVALID;
         }
     }
 };
