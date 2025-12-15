@@ -128,7 +128,8 @@ void onWiFiStateChange(WiFiState oldState, WiFiState newState) {
         // Initialize MQTT
         mqttClient.begin();
         
-        // GitHub OTA is handled via otaManager.update() in the main loop
+        // Trigger OTA check on boot (will run in 30 seconds)
+        otaManager.checkOnBoot();
     }
 }
 

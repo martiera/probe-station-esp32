@@ -76,6 +76,15 @@ public:
     
     // Get partition and memory info for pre-flight checks
     static OTAPartitionInfo getPartitionInfo();
+    
+    // Check if an update is available (compared to current firmware version)
+    bool isUpdateAvailable() const;
+    
+    // Get the available update version (empty if none)
+    String getAvailableVersion() const;
+    
+    // Trigger a check on boot (delayed to allow WiFi to connect)
+    void checkOnBoot();
 
 private:
     OTAReleaseInfo _release;

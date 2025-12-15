@@ -53,6 +53,11 @@ public:
     void sendNotification(const char* type, const char* message);
     
     /**
+     * Send update notification to a specific client
+     */
+    void sendUpdateNotification(AsyncWebSocketClient* client);
+    
+    /**
      * Set OTA mode - closes all WebSocket connections to free memory
      */
     void setOtaMode(bool enabled);

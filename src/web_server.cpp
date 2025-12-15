@@ -113,6 +113,26 @@ void WebServer::sendNotification(const char* type, const char* message) {
     _ws.textAll(buffer);
 }
 
+void WebServer::sendUpdateNotification(AsyncWebSocketClient* client) {
+    if (_otaMode) return;
+    if (!otaManager.isUpdateAvailable()) return;
+    
+    String version = otaManager.getAvailableVersion();
+    if (version.length() == 0) return;
+    
+    JsonDocument doc;
+    doc["type"] = "update_available";
+    doc["version"] = version;
+    doc["current"] = FIRMWARE_VERSION;
+    
+    char buffer[256];
+    serializeJson(doc, buffer, sizeof(buffer));
+    
+    client->text(buffer);
+    Serial.printf("[WebServer] Sent update notification to client %u: %s -> %s\n", 
+                  client->id(), FIRMWARE_VERSION, version.c_str());
+}
+
 void WebServer::setOtaMode(bool enabled) {
     _otaMode = enabled;
     if (enabled) {
@@ -839,11 +859,12 @@ void WebServer::handleGetOtaInfo(AsyncWebServerRequest* request) {
         return;
     }
 
-    // Kick off a refresh in the background (non-blocking).
     // Check for force parameter (e.g., ?force=1 from check button)
-    bool force = request->hasParam("force") && request->getParam("force")->value() == "1";
+    // Only force-check if explicitly requested, don't auto-check on every page load
     String err;
-    otaManager.ensureReleaseInfoFresh(force, err);
+    if (request->hasParam("force") && request->getParam("force")->value() == "1") {
+        otaManager.ensureReleaseInfoFresh(true, err);
+    }
 
     OTAProgress p = otaManager.getProgress();
     doc["state"] = otaStateToString(p.state);
@@ -934,6 +955,8 @@ void WebServer::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
             Serial.printf("[WebServer] WebSocket client %u connected\n", client->id());
             // Send initial data
             sendSensorUpdate();
+            // Check if update is available and notify client
+            sendUpdateNotification(client);
             break;
             
         case WS_EVT_DISCONNECT:

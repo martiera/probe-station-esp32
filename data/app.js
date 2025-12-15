@@ -371,18 +371,26 @@ function showUpdateBannerIfAvailable() {
     
     // Check if update is available from cached OTA info
     apiGet('ota/info').then(info => {
-        const banner = document.getElementById('updateBanner');
-        const versionEl = document.getElementById('updateVersion');
-        
         if (info.updateAvailable && info.latest && info.latest.tag) {
-            versionEl.textContent = info.latest.tag;
-            banner.style.display = 'block';
-        } else {
-            banner.style.display = 'none';
+            showUpdateBanner(info.latest.tag);
         }
     }).catch(() => {
         // Silently ignore errors
     });
+}
+
+function showUpdateBanner(version) {
+    // Only show if not dismissed
+    const dismissed = safeLocalStorageGet('updateBannerDismissed');
+    if (dismissed === 'true') {
+        return;
+    }
+    
+    const banner = document.getElementById('updateBanner');
+    const versionEl = document.getElementById('updateVersion');
+    
+    versionEl.textContent = version;
+    banner.style.display = 'block';
 }
 
 function dismissUpdateBanner() {
@@ -422,43 +430,65 @@ function initTabs() {
     tabs.forEach(tab => {
         tab.addEventListener('click', () => {
             const tabId = tab.dataset.tab;
-            
-            // Update ALL tab buttons (both desktop and mobile)
-            tabs.forEach(t => {
-                if (t.dataset.tab === tabId) {
-                    t.classList.add('active');
-                } else {
-                    t.classList.remove('active');
-                }
-            });
-            
-            // Fade out current content
-            const currentContent = document.querySelector('.tab-content.active');
-            if (currentContent) {
-                currentContent.style.opacity = '0';
-                currentContent.style.transform = 'translateY(10px)';
-                
-                setTimeout(() => {
-                    currentContent.classList.remove('active');
-                    
-                    // Fade in new content
-                    const newContent = document.getElementById(`tab-${tabId}`);
-                    newContent.classList.add('active');
-                    
-                    // Trigger reflow
-                    newContent.offsetHeight;
-                    
-                    newContent.style.opacity = '1';
-                    newContent.style.transform = 'translateY(0)';
-                    
-                    // Scroll to top on mobile
-                    if (window.innerWidth < 768) {
-                        window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }
-                }, 150);
-            }
+            switchToTab(tabId);
         });
     });
+}
+
+function switchToTab(tabId) {
+    const tabs = document.querySelectorAll('.tab');
+    
+    // Update ALL tab buttons (both desktop and mobile)
+    tabs.forEach(t => {
+        if (t.dataset.tab === tabId) {
+            t.classList.add('active');
+        } else {
+            t.classList.remove('active');
+        }
+    });
+    
+    // Update page title based on active tab
+    updatePageTitle(tabId);
+    
+    // Fade out current content
+    const currentContent = document.querySelector('.tab-content.active');
+    if (currentContent) {
+        currentContent.style.opacity = '0';
+        currentContent.style.transform = 'translateY(10px)';
+        
+        setTimeout(() => {
+            currentContent.classList.remove('active');
+            
+            // Fade in new content
+            const newContent = document.getElementById(`tab-${tabId}`);
+            newContent.classList.add('active');
+            
+            // Trigger reflow
+            newContent.offsetHeight;
+            
+            newContent.style.opacity = '1';
+            newContent.style.transform = 'translateY(0)';
+            
+            // Scroll to top on mobile
+            if (window.innerWidth < 768) {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+        }, 150);
+    }
+}
+
+function updatePageTitle(tabId) {
+    // Only update title on mobile
+    if (window.innerWidth >= 768) return;
+    
+    const titleEl = document.getElementById('pageTitle');
+    const titles = {
+        'dashboard': 'Temperature Monitor',
+        'sensors': 'Sensors',
+        'calibration': 'Calibration',
+        'settings': 'Settings'
+    };
+    titleEl.textContent = titles[tabId] || 'Temperature Monitor';
 }
 
 // ============================================================================
@@ -507,6 +537,12 @@ function handleWebSocketMessage(data) {
             
         case 'notification':
             showToast(data.message, data.level);
+            break;
+            
+        case 'update_available':
+            // Server detected an update is available
+            console.log('Update available:', data.version, '(current:', data.current, ')');
+            showUpdateBanner(data.version);
             break;
     }
 }

@@ -278,6 +278,30 @@ void OTAManager::begin() {
     Serial.println("[OTA] OTA ready");
 }
 
+void OTAManager::checkOnBoot() {
+    // Trigger initial check after a short delay (WiFi should be connected)
+    _lastAutoCheck = millis() - AUTO_CHECK_INTERVAL_MS + 30000; // Check in 30 seconds
+    Serial.println("[OTA] Boot check scheduled in 30 seconds");
+}
+
+bool OTAManager::isUpdateAvailable() const {
+    if (_releaseMutex && xSemaphoreTake(_releaseMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        bool available = (_release.tag.length() > 0) && (String(FIRMWARE_VERSION) != _release.tag);
+        xSemaphoreGive(_releaseMutex);
+        return available;
+    }
+    return false;
+}
+
+String OTAManager::getAvailableVersion() const {
+    if (_releaseMutex && xSemaphoreTake(_releaseMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        String version = _release.tag;
+        xSemaphoreGive(_releaseMutex);
+        return version;
+    }
+    return String();
+}
+
 void OTAManager::getReleaseInfoCopy(OTAReleaseInfo& out) const {
     if (_releaseMutex && xSemaphoreTake(_releaseMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         out = _release;

@@ -1111,9 +1111,27 @@ body {
 /* Responsive */
 @media (max-width: 768px) {
     .header {
-        flex-direction: column;
-        gap: var(--space-md);
-        text-align: center;
+        padding: var(--space-sm) var(--space-md);
+        margin-bottom: var(--space-md);
+    }
+    
+    .header-left h1 {
+        font-size: 1rem;
+        margin-bottom: 0;
+    }
+    
+    .status-badge {
+        padding: 4px 8px;
+        font-size: 0.7rem;
+    }
+    
+    .status-badge .status-text {
+        display: none;
+    }
+    
+    .status-dot {
+        width: 6px;
+        height: 6px;
     }
     
     .tabs {
