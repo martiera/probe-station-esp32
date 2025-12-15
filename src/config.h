@@ -36,8 +36,7 @@
 // ============================================================================
 
 // DS18B20 OneWire bus pin
-// Note: GPIO4 is used for TFT backlight on TTGO T-Display, use GPIO27 instead
-constexpr uint8_t ONEWIRE_PIN = 27;  // GPIO27 - Connect all DS18B20 data pins here
+constexpr uint8_t ONEWIRE_PIN = 13;  // GPIO13 - Connect all DS18B20 data pins here
 
 // Status LED pin (not available on TTGO T-Display, display used instead)
 constexpr uint8_t LED_PIN = 2;

@@ -115,10 +115,17 @@ void WebServer::sendNotification(const char* type, const char* message) {
 
 void WebServer::sendUpdateNotification(AsyncWebSocketClient* client) {
     if (_otaMode) return;
-    if (!otaManager.isUpdateAvailable()) return;
     
     String version = otaManager.getAvailableVersion();
     if (version.length() == 0) return;
+    
+    // Don't send notification if versions match
+    if (version == String(FIRMWARE_VERSION)) {
+        Serial.printf("[WebServer] Versions match (%s), not sending update notification\n", version.c_str());
+        return;
+    }
+    
+    Serial.printf("[WebServer] Update available: %s -> %s\n", FIRMWARE_VERSION, version.c_str());
     
     JsonDocument doc;
     doc["type"] = "update_available";

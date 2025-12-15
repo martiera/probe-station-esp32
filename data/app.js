@@ -361,14 +361,6 @@ function checkForUpdates() {
 }
 
 function showUpdateBannerIfAvailable() {
-    // Only show if not dismissed and update is available
-    const dismissed = safeLocalStorageGet('updateBannerDismissed');
-    
-    // Don't show if dismissed for this session
-    if (dismissed === 'true') {
-        return;
-    }
-    
     // Check if update is available from cached OTA info
     apiGet('ota/info').then(info => {
         if (info.updateAvailable && info.latest && info.latest.tag) {
@@ -380,22 +372,34 @@ function showUpdateBannerIfAvailable() {
 }
 
 function showUpdateBanner(version) {
-    // Only show if not dismissed
-    const dismissed = safeLocalStorageGet('updateBannerDismissed');
-    if (dismissed === 'true') {
+    // Check if this specific version was dismissed
+    const dismissedVersion = safeLocalStorageGet('updateBannerDismissedVersion');
+    if (dismissedVersion === version) {
+        console.log('Banner dismissed for version:', version);
         return;
     }
     
+    console.log('Showing update banner for version:', version);
     const banner = document.getElementById('updateBanner');
     const versionEl = document.getElementById('updateVersion');
+    
+    if (!banner || !versionEl) {
+        console.error('Banner elements not found!');
+        return;
+    }
     
     versionEl.textContent = version;
     banner.style.display = 'block';
 }
 
 function dismissUpdateBanner() {
-    document.getElementById('updateBanner').style.display = 'none';
-    safeLocalStorageSet('updateBannerDismissed', 'true');
+    const banner = document.getElementById('updateBanner');
+    const version = document.getElementById('updateVersion').textContent;
+    banner.style.display = 'none';
+    // Store the dismissed version so banner reappears if a newer version becomes available
+    safeLocalStorageSet('updateBannerDismissedVersion', version);
+    // Clean up old key
+    safeLocalStorageRemove('updateBannerDismissed');
 }
 
 function goToUpdatePage() {
@@ -449,6 +453,11 @@ function switchToTab(tabId) {
     
     // Update page title based on active tab
     updatePageTitle(tabId);
+    
+    // Load OTA info when switching to settings tab
+    if (tabId === 'settings') {
+        loadOtaInfo();
+    }
     
     // Fade out current content
     const currentContent = document.querySelector('.tab-content.active');
@@ -542,7 +551,13 @@ function handleWebSocketMessage(data) {
         case 'update_available':
             // Server detected an update is available
             console.log('Update available:', data.version, '(current:', data.current, ')');
-            showUpdateBanner(data.version);
+            // Ensure OTA info is loaded so Settings tab shows correct info
+            loadOtaInfo().then(() => {
+                showUpdateBanner(data.version);
+            }).catch(() => {
+                // Still show banner even if loading info fails
+                showUpdateBanner(data.version);
+            });
             break;
     }
 }
@@ -672,7 +687,7 @@ function updateSensorGrid() {
     const grid = document.getElementById('sensorGrid');
     
     if (sensors.length === 0) {
-        grid.innerHTML = '<div class="loading">No sensors found. Click Rescan to search.</div>';
+        grid.innerHTML = '<div class="loading">No sensors found</div>';
         return;
     }
     
@@ -701,7 +716,7 @@ function updateSensorList() {
     const list = document.getElementById('sensorList');
     
     if (sensors.length === 0) {
-        list.innerHTML = '<div class="loading">No sensors configured</div>';
+        list.innerHTML = '<div class="loading">No sensors found</div>';
         return;
     }
     
@@ -723,7 +738,7 @@ function updateCalibrationList() {
     const list = document.getElementById('offsetList');
     
     if (sensors.length === 0) {
-        list.innerHTML = '<div class="loading">No sensors to calibrate</div>';
+        list.innerHTML = '<div class="loading">No sensors found</div>';
         return;
     }
     

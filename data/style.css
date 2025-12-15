@@ -658,6 +658,13 @@ body {
     gap: var(--space-md);
 }
 
+/* Desktop: 3 columns for better layout */
+@media (min-width: 768px) {
+    .info-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
 .info-item {
     display: flex;
     justify-content: space-between;
@@ -1095,17 +1102,6 @@ body {
     padding: var(--space-xl);
     color: var(--text-secondary);
     font-size: 0.95rem;
-}
-
-.loading::after {
-    content: '...';
-    animation: dots 1.5s steps(3, end) infinite;
-}
-
-@keyframes dots {
-    0%, 20% { content: '.'; }
-    40% { content: '..'; }
-    60%, 100% { content: '...'; }
 }
 
 /* Responsive */
