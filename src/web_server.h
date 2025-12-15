@@ -61,6 +61,7 @@ private:
     AsyncWebServer _server;
     AsyncWebSocket _ws;
     uint32_t _lastWsUpdate;
+    bool _otaMode = false; // disables WebSocket activity during OTA
     
     /**
      * Setup API routes

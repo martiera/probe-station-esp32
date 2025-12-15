@@ -14,6 +14,7 @@
 #include <cstring>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
+#include <esp_task_wdt.h>
 
 #include "config.h"
 #include "mqtt_client.h"
@@ -558,7 +559,15 @@ bool OTAManager::downloadAndApply(const String& url, int updateCommand, const ch
     http.addHeader("Accept", "application/octet-stream");
     
     Serial.printf("[OTA] %s: Sending GET request...\n", label);
+    
+    // Reset watchdog before potentially long SSL handshake
+    esp_task_wdt_reset();
+    
     int httpCode = http.GET();
+    
+    // Reset watchdog after connection
+    esp_task_wdt_reset();
+    
     Serial.printf("[OTA] %s: HTTP response: %d, free heap: %u\n", label, httpCode, ESP.getFreeHeap());
     
     if (httpCode != HTTP_CODE_OK) {
@@ -657,6 +666,7 @@ bool OTAManager::downloadAndApply(const String& url, int updateCommand, const ch
                 Serial.printf("[OTA] %s: %d%% (%u/%d bytes), heap: %u\n", 
                     label, progress, totalWritten, contentLength, ESP.getFreeHeap());
             }
+            esp_task_wdt_reset();  // Feed watchdog on progress updates
         }
         
         vTaskDelay(1);  // Yield to other tasks
@@ -703,6 +713,8 @@ bool OTAManager::downloadAndApplySPIFFS(const String& url, const char* label, St
     Serial.printf("[OTA] %s: Starting SPIFFS download from %s\n", label, url.c_str());
     Serial.printf("[OTA] %s: Free heap: %u bytes\n", label, ESP.getFreeHeap());
     
+    OTAState progressState = OTAState::UPDATING_SPIFFS;
+    
     WiFiClientSecure* client = new WiFiClientSecure();
     if (!client) {
         error = String(label) + ": Out of memory for SSL client";
@@ -730,8 +742,16 @@ bool OTAManager::downloadAndApplySPIFFS(const String& url, const char* label, St
     
     http.addHeader("User-Agent", "probe-station-esp32");
     
-    Serial.printf("[OTA] %s: Sending GET request...\n", label);;
+    Serial.printf("[OTA] %s: Sending GET request...\n", label);
+    
+    // Reset watchdog before potentially long SSL handshake
+    esp_task_wdt_reset();
+    
     int httpCode = http.GET();
+    
+    // Reset watchdog after connection
+    esp_task_wdt_reset();
+    
     Serial.printf("[OTA] %s: HTTP response: %d\n", label, httpCode);
     
     if (httpCode != HTTP_CODE_OK) {
@@ -770,7 +790,61 @@ bool OTAManager::downloadAndApplySPIFFS(const String& url, const char* label, St
         return false;
     }
     
-    size_t written = Update.writeStream(*client);
+    // Stream in chunks with watchdog feeding
+    WiFiClient* stream = http.getStreamPtr();
+    constexpr size_t CHUNK_SIZE = 1024;
+    uint8_t buffer[CHUNK_SIZE];
+    size_t written = 0;
+    int lastProgress = -1;
+    uint32_t lastProgressTime = millis();
+    
+    while (written < (size_t)contentLength) {
+        // Watchdog timeout check
+        if (millis() - lastProgressTime > 30000) {
+            error = String(label) + ": Download timeout";
+            Update.abort();
+            http.end();
+            delete client;
+            return false;
+        }
+        
+        size_t remaining = contentLength - written;
+        size_t toRead = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
+        
+        int bytesRead = stream->readBytes(buffer, toRead);
+        if (bytesRead <= 0) {
+            delay(10);
+            continue;
+        }
+        
+        lastProgressTime = millis();
+        
+        size_t bytesWritten = Update.write(buffer, bytesRead);
+        if (bytesWritten != (size_t)bytesRead) {
+            error = String(label) + ": Write failed - " + Update.errorString();
+            Update.abort();
+            http.end();
+            delete client;
+            return false;
+        }
+        
+        written += bytesWritten;
+        
+        // Progress and watchdog
+        int progress = (written * 100) / contentLength;
+        if (progress != lastProgress) {
+            lastProgress = progress;
+            setProgress(progressState, progress, "Downloading SPIFFS...");
+            if (progress % 10 == 0) {
+                Serial.printf("[OTA] %s: %d%% (%u/%d bytes)\n", 
+                    label, progress, written, contentLength);
+            }
+            esp_task_wdt_reset();  // Feed watchdog
+        }
+        
+        vTaskDelay(1);  // Yield
+    }
+    
     http.end();
     delete client;
     
@@ -877,6 +951,11 @@ void OTAManager::taskThunk(void* arg) {
 
 void OTAManager::runUpdateTask(OTATarget target) {
     Serial.println("[OTA] Update task started");
+    
+    // CRITICAL: Wait for HTTP response to be fully sent before cleanup
+    // This prevents stack corruption in async_tcp task
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
     Serial.printf("[OTA] Target: %s\n", 
         (target == OTATarget::FIRMWARE) ? "firmware" : 
         (target == OTATarget::SPIFFS) ? "spiffs" : "both");

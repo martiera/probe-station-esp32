@@ -27,6 +27,7 @@ void DisplayManager::begin() {
     
     // Initialize sprite for flicker-free updates
     sprite.createSprite(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    spriteValid = true;
     sprite.setTextDatum(TL_DATUM);
     
     // Set backlight pin
@@ -44,31 +45,36 @@ void DisplayManager::begin() {
 
 void DisplayManager::setOtaMode(bool enabled) {
 #ifdef USE_DISPLAY
-    otaMode = enabled;
     if (enabled) {
-        // Free the sprite buffer to save ~65KB RAM
-        // Yield before and after to prevent watchdog timeout
-        vTaskDelay(pdMS_TO_TICKS(10));
-        sprite.deleteSprite();
-        vTaskDelay(pdMS_TO_TICKS(10));
+        // CRITICAL: Set flags FIRST to stop all sprite access
+        otaMode = true;
+        spriteValid = false;
         
-        // Show OTA message on display
+        // Wait for any in-progress display operations to complete
+        vTaskDelay(pdMS_TO_TICKS(50));
+        
+        // Now safe to delete sprite
+        sprite.deleteSprite();
+        vTaskDelay(pdMS_TO_TICKS(50));
+        
+        // Draw OTA message directly to TFT (no sprite)
         tft.fillScreen(COLOR_BG);
         tft.setTextDatum(MC_DATUM);
         tft.setTextColor(TFT_YELLOW, COLOR_BG);
         tft.drawString("OTA Update", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 - 20, 4);
         tft.setTextColor(TFT_WHITE, COLOR_BG);
         tft.drawString("Please wait...", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 + 20, 2);
-        
         Serial.printf("[Display] OTA mode enabled, sprite freed. Heap: %u\n", ESP.getFreeHeap());
     } else {
-        // Recreate sprite
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(50));
         sprite.createSprite(DISPLAY_WIDTH, DISPLAY_HEIGHT);
-        vTaskDelay(pdMS_TO_TICKS(10));
         sprite.setTextDatum(TL_DATUM);
-        needsRefresh = true;
+        vTaskDelay(pdMS_TO_TICKS(50));
         
+        // Re-enable after sprite is ready
+        spriteValid = true;
+        otaMode = false;
+        needsRefresh = true;
         Serial.printf("[Display] OTA mode disabled, sprite restored. Heap: %u\n", ESP.getFreeHeap());
     }
 #endif
@@ -76,6 +82,7 @@ void DisplayManager::setOtaMode(bool enabled) {
 
 void DisplayManager::update() {
 #ifdef USE_DISPLAY
+    if (!spriteValid) return;
     // Skip updates during OTA
     if (otaMode) {
         return;

@@ -67,7 +67,8 @@ public:
 private:
 #ifdef USE_DISPLAY
     TFT_eSPI tft;
-    TFT_eSprite sprite;  // For flicker-free updates
+    TFT_eSprite sprite;
+    bool spriteValid = false;
 #endif
     
     SensorManager* sensorManager = nullptr;

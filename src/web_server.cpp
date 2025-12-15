@@ -24,7 +24,8 @@ constexpr uint32_t WS_UPDATE_INTERVAL = 2000;
 WebServer::WebServer() :
     _server(WEB_SERVER_PORT),
     _ws("/ws"),
-    _lastWsUpdate(0) {
+    _lastWsUpdate(0),
+    _otaMode(false) {
 }
 
 // ============================================================================
@@ -52,6 +53,8 @@ void WebServer::begin() {
 }
 
 void WebServer::update() {
+    if (_otaMode) return; // Disable all WebSocket activity during OTA
+    
     // Clean up disconnected WebSocket clients
     _ws.cleanupClients();
     
@@ -64,6 +67,7 @@ void WebServer::update() {
 }
 
 void WebServer::sendSensorUpdate() {
+    if (_otaMode) return;
     if (_ws.count() == 0) {
         return;
     }
@@ -92,6 +96,7 @@ void WebServer::sendSensorUpdate() {
 }
 
 void WebServer::sendNotification(const char* type, const char* message) {
+    if (_otaMode) return;
     if (_ws.count() == 0) {
         return;
     }
@@ -109,10 +114,11 @@ void WebServer::sendNotification(const char* type, const char* message) {
 }
 
 void WebServer::setOtaMode(bool enabled) {
+    _otaMode = enabled;
     if (enabled) {
-        // Close all WebSocket connections to free memory
-        _ws.closeAll();
-        Serial.printf("[WebServer] OTA mode enabled, WebSocket closed. Heap: %u\n", ESP.getFreeHeap());
+        // Don't close WebSocket - just stop using it to avoid async_tcp crashes
+        // The memory savings (~2-4KB) isn't worth the instability
+        Serial.printf("[WebServer] OTA mode enabled, WebSocket suspended. Heap: %u\n", ESP.getFreeHeap());
     } else {
         Serial.printf("[WebServer] OTA mode disabled. Heap: %u\n", ESP.getFreeHeap());
     }
@@ -315,12 +321,13 @@ void WebServer::setupRoutes() {
 }
 
 void WebServer::setupStaticFiles() {
-    // Serve static files from SPIFFS with caching
-    // Cache for 1 hour (browser will use cached version, reducing memory pressure)
+    // Serve static files from SPIFFS
     // AsyncWebServer automatically serves .gz versions if they exist
+    // Version is baked into HTML at build time (?v=X.Y.Z on CSS/JS links)
+    // so we can use aggressive caching - version change = new URL = cache miss
     _server.serveStatic("/", SPIFFS, "/")
         .setDefaultFile("index.html")
-        .setCacheControl("max-age=3600");
+        .setCacheControl("max-age=86400");
 }
 
 // ============================================================================
