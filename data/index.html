@@ -16,10 +16,6 @@
             </div>
             <div class="header-right">
                 <div class="status-indicators">
-                    <span class="status-badge" id="wifiStatus">
-                        <span class="status-dot"></span>
-                        <span class="status-text">WiFi</span>
-                    </span>
                     <span class="status-badge" id="mqttStatus">
                         <span class="status-dot"></span>
                         <span class="status-text">MQTT</span>
@@ -52,8 +48,8 @@
         <section class="tab-content active" id="tab-dashboard">
             <!-- Summary Cards -->
             <div class="summary-cards">
-                <div class="summary-card pinned-card" id="pinnedCard" onclick="selectPinnedSensor()">
-                    <div class="card-icon">📌</div>
+                <div class="summary-card pinned-card" id="pinnedCard">
+                    <div class="card-icon pin-icon-btn" onclick="selectPinnedSensor()" title="Select pinned sensor">📌</div>
                     <div class="card-content">
                         <div class="card-value" id="pinnedTemp">--</div>
                         <div class="card-label" id="pinnedName">Pinned Sensor</div>
@@ -88,6 +84,21 @@
                 <div class="sensor-grid" id="sensorGrid">
                     <!-- Sensors will be populated by JavaScript -->
                     <div class="loading">No sensors found</div>
+                </div>
+            </div>
+
+            <!-- Temperature Chart -->
+            <div class="section">
+                <div class="section-header">
+                    <h2>Temperature History</h2>
+                    <select id="chartSensor" class="chart-sensor-select">
+                        <option value="">All Sensors</option>
+                    </select>
+                </div>
+                <div class="chart-container">
+                    <svg id="tempChart" width="100%" height="300" viewBox="0 0 800 300">
+                        <text x="400" y="150" text-anchor="middle" fill="#64748b">Loading...</text>
+                    </svg>
                 </div>
             </div>
 

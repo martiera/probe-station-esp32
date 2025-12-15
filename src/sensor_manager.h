@@ -46,6 +46,8 @@ struct SensorData {
     int16_t history[TEMP_HISTORY_SIZE];      // Temperature history (temp*100), saves ~50% RAM
     uint16_t historyIndex;                   // Current position in history buffer
     uint16_t historyCount;                   // Number of valid history entries
+    uint32_t lastHistoryTime;                // Last time a history point was stored
+    float lastHistoryTemp;                   // Last temperature stored in history
     AlarmState alarmState;                   // Current alarm state
     AlarmState prevAlarmState;               // Previous alarm state (for change detection)
     bool connected;                          // Whether sensor is currently responding
@@ -57,6 +59,8 @@ struct SensorData {
         rawTemperature(TEMP_INVALID),
         historyIndex(0),
         historyCount(0),
+        lastHistoryTime(0),
+        lastHistoryTemp(TEMP_INVALID),
         alarmState(AlarmState::SENSOR_ERROR),
         prevAlarmState(AlarmState::SENSOR_ERROR),
         connected(false),
@@ -242,6 +246,17 @@ public:
      */
     void requestRescan() { _rescanRequested = true; }
     
+    /**
+     * Check if sensor data has changed since last check
+     * Clears the flag after returning true
+     * @return true if data changed
+     */
+    bool hasDataChanged() {
+        bool changed = _dataChanged;
+        if (changed) _dataChanged = false;
+        return changed;
+    }
+    
 private:
     OneWire _oneWire;
     DallasTemperature _sensors;
@@ -253,6 +268,7 @@ private:
     
     AlarmCallback _alarmCallback;
     ConnectionCallback _connectionCallback;
+    bool _dataChanged;
     
     /**
      * Check and update alarm states for all sensors

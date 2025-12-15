@@ -102,6 +102,7 @@ struct SystemConfig {
     bool celsiusUnits;          // true = Celsius, false = Fahrenheit
     int8_t utcOffset;           // UTC offset in hours
     bool otaEnabled;            // OTA updates enabled
+    char pinnedSensorAddress[SENSOR_ADDR_STR_LEN];  // Pinned sensor address (shared across devices)
     
     SystemConfig() : 
         readInterval(2),
@@ -109,6 +110,7 @@ struct SystemConfig {
         utcOffset(0),
         otaEnabled(true) {
         strcpy(deviceName, "TempMonitor");
+        pinnedSensorAddress[0] = '\0';  // Empty = no pinned sensor
     }
 };
 

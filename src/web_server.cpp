@@ -33,14 +33,8 @@ WebServer::WebServer() :
 // ============================================================================
 
 void WebServer::begin() {
-    Serial.println(F("[WebServer] Initializing..."));
-    
-    // Setup WebSocket
-    _ws.onEvent([this](AsyncWebSocket* server, AsyncWebSocketClient* client,
-                       AwsEventType type, void* arg, uint8_t* data, size_t len) {
-        onWsEvent(server, client, type, arg, data, len);
-    });
-    _server.addHandler(&_ws);
+    // WebSocket disabled to save memory (~4-8KB)
+    // Using API polling instead
     
     // Setup routes
     setupRoutes();
@@ -49,28 +43,18 @@ void WebServer::begin() {
     // Start server
     _server.begin();
     
-    Serial.println(F("[WebServer] Started"));
+    Serial.println(F("[WebServer] Started (WebSocket disabled, using API polling)"));
 }
 
 void WebServer::update() {
-    if (_otaMode) return; // Disable all WebSocket activity during OTA
-    
-    // Clean up disconnected WebSocket clients
-    _ws.cleanupClients();
-    
-    // Send periodic WebSocket updates
-    uint32_t now = millis();
-    if (now - _lastWsUpdate >= WS_UPDATE_INTERVAL && _ws.count() > 0) {
-        sendSensorUpdate();
-        _lastWsUpdate = now;
-    }
+    // WebSocket disabled - nothing to update
+    // Clients poll /api/sensors instead
 }
 
 void WebServer::sendSensorUpdate() {
-    if (_otaMode) return;
-    if (_ws.count() == 0) {
-        return;
-    }
+    // WebSocket disabled - no-op
+    // Clients poll /api/sensors instead
+    return;
     
     JsonDocument doc;
     doc["type"] = "sensors";
@@ -96,10 +80,8 @@ void WebServer::sendSensorUpdate() {
 }
 
 void WebServer::sendNotification(const char* type, const char* message) {
-    if (_otaMode) return;
-    if (_ws.count() == 0) {
-        return;
-    }
+    // WebSocket disabled - no-op
+    return;
     
     JsonDocument doc;
     doc["type"] = "notification";
@@ -114,41 +96,12 @@ void WebServer::sendNotification(const char* type, const char* message) {
 }
 
 void WebServer::sendUpdateNotification(AsyncWebSocketClient* client) {
-    if (_otaMode) return;
-    
-    String version = otaManager.getAvailableVersion();
-    if (version.length() == 0) return;
-    
-    // Don't send notification if versions match
-    if (version == String(FIRMWARE_VERSION)) {
-        Serial.printf("[WebServer] Versions match (%s), not sending update notification\n", version.c_str());
-        return;
-    }
-    
-    Serial.printf("[WebServer] Update available: %s -> %s\n", FIRMWARE_VERSION, version.c_str());
-    
-    JsonDocument doc;
-    doc["type"] = "update_available";
-    doc["version"] = version;
-    doc["current"] = FIRMWARE_VERSION;
-    
-    char buffer[256];
-    serializeJson(doc, buffer, sizeof(buffer));
-    
-    client->text(buffer);
-    Serial.printf("[WebServer] Sent update notification to client %u: %s -> %s\n", 
-                  client->id(), FIRMWARE_VERSION, version.c_str());
+    // WebSocket disabled - no-op
 }
 
 void WebServer::setOtaMode(bool enabled) {
     _otaMode = enabled;
-    if (enabled) {
-        // Don't close WebSocket - just stop using it to avoid async_tcp crashes
-        // The memory savings (~2-4KB) isn't worth the instability
-        Serial.printf("[WebServer] OTA mode enabled, WebSocket suspended. Heap: %u\n", ESP.getFreeHeap());
-    } else {
-        Serial.printf("[WebServer] OTA mode disabled. Heap: %u\n", ESP.getFreeHeap());
-    }
+    // WebSocket disabled - nothing to do
 }
 
 // ============================================================================
@@ -622,6 +575,7 @@ void WebServer::handleGetSystemConfig(AsyncWebServerRequest* request) {
     doc["celsiusUnits"] = config.celsiusUnits;
     doc["utcOffset"] = config.utcOffset;
     doc["otaEnabled"] = config.otaEnabled;
+    doc["pinnedSensorAddress"] = config.pinnedSensorAddress;
     
     char buffer[256];
     serializeJson(doc, buffer, sizeof(buffer));
@@ -654,6 +608,9 @@ void WebServer::handleUpdateSystemConfig(AsyncWebServerRequest* request,
     }
     if (doc["otaEnabled"].is<JsonVariant>()) {
         config.otaEnabled = doc["otaEnabled"];
+    }
+    if (doc["pinnedSensorAddress"].is<JsonVariant>()) {
+        strlcpy(config.pinnedSensorAddress, doc["pinnedSensorAddress"] | "", sizeof(config.pinnedSensorAddress));
     }
     
     if (!configManager.save()) {
@@ -959,7 +916,6 @@ void WebServer::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
                           AwsEventType type, void* arg, uint8_t* data, size_t len) {
     switch (type) {
         case WS_EVT_CONNECT:
-            Serial.printf("[WebServer] WebSocket client %u connected\n", client->id());
             // Send initial data
             sendSensorUpdate();
             // Check if update is available and notify client
@@ -967,7 +923,6 @@ void WebServer::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
             break;
             
         case WS_EVT_DISCONNECT:
-            Serial.printf("[WebServer] WebSocket client %u disconnected\n", client->id());
             break;
             
         case WS_EVT_DATA:
@@ -975,7 +930,6 @@ void WebServer::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
             break;
             
         case WS_EVT_ERROR:
-            Serial.printf("[WebServer] WebSocket error from client %u\n", client->id());
             break;
             
         default:

@@ -34,7 +34,8 @@ SensorManager::SensorManager() :
     _lastDiscoveryTime(0),
     _rescanRequested(false),
     _alarmCallback(nullptr),
-    _connectionCallback(nullptr) {
+    _connectionCallback(nullptr),
+    _dataChanged(false) {
 }
 
 // ============================================================================
@@ -92,8 +93,9 @@ uint8_t SensorManager::discoverSensors() {
         // Set resolution
         _sensors.setResolution(addr, SENSOR_RESOLUTION);
         
-        // Mark as connected
-        _sensorData[_sensorCount].connected = true;
+        // Don't mark as connected yet - wait for first valid temperature reading
+        // This prevents showing -127.0 on display during boot
+        _sensorData[_sensorCount].connected = false;
         _sensorData[_sensorCount].errorCount = 0;
         
         // Ensure sensor has configuration
@@ -203,6 +205,9 @@ void SensorManager::readTemperatures() {
     
     // Check alarm states
     checkAlarms();
+    
+    // Mark data as changed
+    _dataChanged = true;
 }
 
 void SensorManager::update() {
@@ -506,14 +511,50 @@ void SensorManager::addToHistory(uint8_t index, float temp) {
         return;
     }
     
-    // Store as int16_t (temp * 100) to save memory
-    int16_t historyValue = (temp == TEMP_INVALID) ? TEMP_HISTORY_INVALID : (int16_t)(temp * 100.0f);
-    _sensorData[index].history[_sensorData[index].historyIndex] = historyValue;
-    _sensorData[index].historyIndex = (_sensorData[index].historyIndex + 1) % TEMP_HISTORY_SIZE;
-    
-    if (_sensorData[index].historyCount < TEMP_HISTORY_SIZE) {
-        _sensorData[index].historyCount++;
+    // Skip invalid temperatures
+    if (temp == TEMP_INVALID) {
+        return;
     }
+    
+    SensorData& sensor = _sensorData[index];
+    uint32_t now = millis();
+    uint32_t timeSinceLastHistory = now - sensor.lastHistoryTime;
+    
+    // Round temperature to 0.1°C for comparison
+    float roundedTemp = roundf(temp * 10.0f) / 10.0f;
+    float lastRoundedTemp = roundf(sensor.lastHistoryTemp * 10.0f) / 10.0f;
+    float tempDiff = fabsf(roundedTemp - lastRoundedTemp);
+    
+    // Determine if we should store this reading:
+    // - First reading (no history yet)
+    // - 1 minute passed AND temperature changed by >= 0.1°C
+    // - 5 minutes passed (force store even if stable)
+    bool shouldStore = false;
+    
+    if (sensor.historyCount == 0) {
+        shouldStore = true;  // First reading
+    } else if (timeSinceLastHistory >= 5 * 60 * 1000) {
+        shouldStore = true;  // 5 minutes passed - force store
+    } else if (timeSinceLastHistory >= 60 * 1000 && tempDiff >= 0.1f) {
+        shouldStore = true;  // 1 minute passed and temp changed
+    }
+    
+    if (!shouldStore) {
+        return;
+    }
+    
+    // Store as int16_t (temp * 100) to save memory
+    int16_t historyValue = (int16_t)(temp * 100.0f);
+    sensor.history[sensor.historyIndex] = historyValue;
+    sensor.historyIndex = (sensor.historyIndex + 1) % TEMP_HISTORY_SIZE;
+    
+    if (sensor.historyCount < TEMP_HISTORY_SIZE) {
+        sensor.historyCount++;
+    }
+    
+    // Update last history tracking
+    sensor.lastHistoryTime = now;
+    sensor.lastHistoryTemp = temp;
 }
 
 float SensorManager::applyCalibration(uint8_t index, float rawTemp) {

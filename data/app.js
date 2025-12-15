@@ -7,18 +7,17 @@
 // Configuration
 // ============================================================================
 
-const WS_RECONNECT_INTERVAL = 5000;
+const SENSOR_POLL_INTERVAL = 3000; // Poll sensors every 3 seconds
 const STATUS_UPDATE_INTERVAL = 30000;
 
 // ============================================================================
 // State
 // ============================================================================
 
-let websocket = null;
 let sensors = [];
 let systemStatus = null;
-let reconnectTimer = null;
-let pinnedSensorAddress = null;
+let sensorPollTimer = null;
+let pinnedSensorAddress = null;  // Loaded from server, not localStorage
 
 function safeLocalStorageGet(key) {
     try {
@@ -44,33 +43,45 @@ function safeLocalStorageRemove(key) {
     }
 }
 
-pinnedSensorAddress = safeLocalStorageGet('pinnedSensor') || null;
-
 let otaPollTimer = null;
 let otaLastProgress = -1;
 let otaLastProgressTime = 0;
 const OTA_PROGRESS_TIMEOUT_MS = 60000; // 1 minute timeout if no progress
 
+// Chart state
+let chartData = {}; // {address: [{time, temp}, ...]}
+let chartSelectedSensor = ''; // Empty = all sensors
+let chartDataLoaded = false; // Track if initial history was loaded from API
+let lastChartRedraw = 0; // Track last redraw time
+
 // ============================================================================
 // Initialization
 // ============================================================================
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     // Check if OTA was in progress (for cross-client/tab sync)
     checkAndRestoreOtaOverlay();
     initTabs();
-    connectWebSocket();
-    loadStatus().then(() => {
-        // Restore collapsed states after status is loaded
-        restoreCollapsedStates();
-    });
-    loadConfigurations();
-    loadOtaInfo();
+    initChart();
+    
+    // Initial data load - load config first to get pinned sensor before first sensor display
+    await loadConfigurations();
+    
+    // Then stagger the rest to avoid overwhelming ESP32
+    loadSensors();
+    setTimeout(() => {
+        loadStatus().then(() => {
+            // Restore collapsed states after status is loaded
+            restoreCollapsedStates();
+        });
+    }, 200);
+    setTimeout(() => loadOtaInfo(), 400);
     
     // Check for updates and show banner if available
-    checkForUpdates();
+    setTimeout(() => checkForUpdates(), 600);
     
-    // Periodic status update
+    // Start polling (chart history loaded in first loadSensors call)
+    sensorPollTimer = setInterval(loadSensors, SENSOR_POLL_INTERVAL);
     setInterval(loadStatus, STATUS_UPDATE_INTERVAL);
 });
 
@@ -348,6 +359,70 @@ function startRebootCheck() {
 }
 
 // ============================================================================
+// Sensor Data Polling
+// ============================================================================
+
+async function loadSensors() {
+    try {
+        const data = await apiGet('sensors');
+        sensors = data;
+        updateSensorDisplay();
+        
+        // Calculate summary
+        const summary = {
+            avg: sensorManager_getAverage(),
+            min: sensorManager_getMin(),
+            max: sensorManager_getMax(),
+            alarms: sensorManager_getAlarmCount()
+        };
+        updateSummary(summary);
+        updateChartData();
+        
+        // Load history on first load
+        if (!chartDataLoaded) {
+            await loadChartHistory();
+        }
+    } catch (error) {
+        console.error('Error loading sensors:', error);
+    }
+}
+
+function sensorManager_getAverage() {
+    let sum = 0, count = 0;
+    sensors.forEach(s => {
+        if (s.connected && s.temperature !== null) {
+            sum += s.temperature;
+            count++;
+        }
+    });
+    return count > 0 ? sum / count : null;
+}
+
+function sensorManager_getMin() {
+    let min = null;
+    sensors.forEach(s => {
+        if (s.connected && s.temperature !== null) {
+            if (min === null || s.temperature < min) min = s.temperature;
+        }
+    });
+    return min;
+}
+
+function sensorManager_getMax() {
+    let max = null;
+    sensors.forEach(s => {
+        if (s.connected && s.temperature !== null) {
+            if (max === null || s.temperature > max) max = s.temperature;
+        }
+    });
+    return max;
+}
+
+function sensorManager_getAlarmCount() {
+    return sensors.filter(s => s.alarm === 'low' || s.alarm === 'high').length;
+}
+
+// ============================================================================
 // Update Banner
 // ============================================================================
 
@@ -501,68 +576,6 @@ function updatePageTitle(tabId) {
 }
 
 // ============================================================================
-// WebSocket Connection
-// ============================================================================
-
-function connectWebSocket() {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
-    
-    console.log('Connecting to WebSocket:', wsUrl);
-    
-    websocket = new WebSocket(wsUrl);
-    
-    websocket.onopen = () => {
-        console.log('WebSocket connected');
-        clearTimeout(reconnectTimer);
-    };
-    
-    websocket.onmessage = (event) => {
-        try {
-            const data = JSON.parse(event.data);
-            handleWebSocketMessage(data);
-        } catch (e) {
-            console.error('Error parsing WebSocket message:', e);
-        }
-    };
-    
-    websocket.onclose = () => {
-        console.log('WebSocket disconnected');
-        reconnectTimer = setTimeout(connectWebSocket, WS_RECONNECT_INTERVAL);
-    };
-    
-    websocket.onerror = (error) => {
-        console.error('WebSocket error:', error);
-    };
-}
-
-function handleWebSocketMessage(data) {
-    switch (data.type) {
-        case 'sensors':
-            sensors = data.data;
-            updateSensorDisplay();
-            updateSummary(data.summary);
-            break;
-            
-        case 'notification':
-            showToast(data.message, data.level);
-            break;
-            
-        case 'update_available':
-            // Server detected an update is available
-            console.log('Update available:', data.version, '(current:', data.current, ')');
-            // Ensure OTA info is loaded so Settings tab shows correct info
-            loadOtaInfo().then(() => {
-                showUpdateBanner(data.version);
-            }).catch(() => {
-                // Still show banner even if loading info fails
-                showUpdateBanner(data.version);
-            });
-            break;
-    }
-}
-
-// ============================================================================
 // API Calls
 // ============================================================================
 
@@ -638,34 +651,36 @@ async function loadStatus() {
 function updateStatusDisplay() {
     if (!systemStatus) return;
     
-    // WiFi status
-    const wifiStatus = document.getElementById('wifiStatus');
-    wifiStatus.classList.toggle('connected', systemStatus.wifi.status === 'connected');
-    
     // MQTT status
     const mqttStatus = document.getElementById('mqttStatus');
-    mqttStatus.classList.toggle('connected', systemStatus.mqtt.connected);
+    if (mqttStatus) {
+        mqttStatus.classList.toggle('connected', systemStatus.mqtt.connected);
+    }
     
     // System info
-    document.getElementById('uptime').textContent = formatUptime(systemStatus.device.uptime);
-    document.getElementById('ipAddress').textContent = systemStatus.wifi.ip;
-    document.getElementById('wifiSignal').textContent = `${systemStatus.wifi.signal}%`;
-    document.getElementById('freeHeap').textContent = formatBytes(systemStatus.device.freeHeap);
-    document.getElementById('firmware').textContent = systemStatus.device.firmware;
-    document.getElementById('sensorCount').textContent = systemStatus.sensors.count;
+    const uptime = document.getElementById('uptime');
+    const ipAddress = document.getElementById('ipAddress');
+    const wifiSignal = document.getElementById('wifiSignal');
+    const freeHeap = document.getElementById('freeHeap');
+    const firmware = document.getElementById('firmware');
+    const sensorCount = document.getElementById('sensorCount');
+    
+    if (uptime) uptime.textContent = formatUptime(systemStatus.device.uptime);
+    if (ipAddress) ipAddress.textContent = systemStatus.wifi.ip;
+    if (wifiSignal) wifiSignal.textContent = `${systemStatus.wifi.signal}%`;
+    if (freeHeap) freeHeap.textContent = formatBytes(systemStatus.device.freeHeap);
+    if (firmware) firmware.textContent = systemStatus.device.firmware;
+    if (sensorCount) sensorCount.textContent = systemStatus.sensors.count;
 }
 
 async function loadConfigurations() {
     try {
-        // Load WiFi config
         const wifiConfig = await apiGet('config/wifi');
         populateWifiForm(wifiConfig);
         
-        // Load MQTT config
         const mqttConfig = await apiGet('config/mqtt');
         populateMqttForm(mqttConfig);
         
-        // Load System config
         const sysConfig = await apiGet('config/system');
         populateSystemForm(sysConfig);
     } catch (error) {
@@ -759,7 +774,7 @@ function updateSummary(summary) {
     let pinnedSensor = null;
     
     for (const sensor of sensors) {
-        if (!sensor.connected || sensor.temperature === null) continue;
+        if (!sensor.connected || sensor.temperature === null || sensor.temperature === -127) continue;
         
         if (minSensor === null || sensor.temperature < minSensor.temperature) {
             minSensor = sensor;
@@ -850,24 +865,28 @@ function selectPinnedSensor() {
     document.body.appendChild(dialog);
 }
 
-function savePinnedSensor() {
+async function savePinnedSensor() {
     const select = document.getElementById('pinnedSensorSelect');
     pinnedSensorAddress = select.value || null;
     
-    if (pinnedSensorAddress) {
-        safeLocalStorageSet('pinnedSensor', pinnedSensorAddress);
-    } else {
-        safeLocalStorageRemove('pinnedSensor');
-    }
-    
     closePinDialog();
     
-    // Force summary update
-    if (sensors.length > 0) {
-        updateSummary({ alarms: document.getElementById('alarmCount').textContent });
+    try {
+        // Save to server config
+        await apiPut('config/system', {
+            pinnedSensorAddress: pinnedSensorAddress || ''
+        });
+        
+        // Force summary update
+        if (sensors.length > 0) {
+            updateSummary({ alarms: document.getElementById('alarmCount').textContent });
+        }
+        
+        showToast('Pinned sensor updated', 'success');
+    } catch (error) {
+        console.error('Error saving pinned sensor:', error);
+        showToast('Failed to save pinned sensor', 'error');
     }
-    
-    showToast('Pinned sensor updated', 'success');
 }
 
 function closePinDialog() {
@@ -1122,6 +1141,10 @@ function populateSystemForm(config) {
     document.getElementById('deviceNameInput').value = config.deviceName || '';
     document.getElementById('readInterval').value = config.readInterval || 2;
     document.getElementById('celsiusUnits').checked = config.celsiusUnits;
+    
+    // Load pinned sensor from server config
+    pinnedSensorAddress = config.pinnedSensorAddress || null;
+    if (pinnedSensorAddress === '') pinnedSensorAddress = null;
 }
 
 async function saveSystemConfig() {
@@ -1204,6 +1227,389 @@ function restoreCollapsedStates() {
             }
         }
     });
+}
+
+// ============================================================================
+// Chart Functions
+// ============================================================================
+
+function initChart() {
+    const select = document.getElementById('chartSensor');
+    if (!select) return;
+    
+    select.addEventListener('change', (e) => {
+        chartSelectedSensor = e.target.value;
+        drawChart();
+    });
+}
+
+// Load initial chart history from ESP32 API (last ~1 minute of data)
+async function loadChartHistory() {
+    if (chartDataLoaded) return; // Only load once
+    
+    try {
+        const sensorData = await apiGet('sensors');
+        if (!sensorData || sensorData.length === 0) return;
+        
+        const now = Date.now();
+        const historyInterval = 2000; // ESP32 reads every ~2 seconds
+        let hasAnyData = false;
+        
+        // Load history for each sensor
+        const promises = sensorData.map(async (sensor, index) => {
+            try {
+                const history = await apiGet(`history/${index}`);
+                if (!history || history.length === 0) return;
+                
+                // Convert history array to timestamped data
+                // History is ordered Oldest -> Newest
+                const points = [];
+                for (let i = 0; i < history.length; i++) {
+                    const temp = Math.round(history[i] * 10) / 10; // Round to 0.1°C
+                    // Skip invalid temperatures
+                    if (temp === -127 || temp < -55 || temp > 125) continue;
+                    
+                    // Calculate time: last element is 'now', others are older
+                    const time = now - (history.length - 1 - i) * historyInterval;
+                    points.push({ time, temp });
+                }
+                
+                if (points.length > 0) {
+                    chartData[sensor.address] = points;
+                    hasAnyData = true;
+                }
+            } catch (err) {
+                // Ignore history load errors
+            }
+        });
+        
+        await Promise.all(promises);
+        chartDataLoaded = true;
+        
+        if (hasAnyData) {
+            updateChartSensorList();
+            drawChart();
+        } else {
+            // Create initial two points from current sensor readings to enable chart display
+            const now = Date.now();
+            sensorData.forEach(sensor => {
+                if (sensor.connected && sensor.temperature !== null && sensor.temperature !== -127 && 
+                    sensor.temperature >= -55 && sensor.temperature <= 125) {
+                    const temp = Math.round(sensor.temperature * 10) / 10;
+                    chartData[sensor.address] = [
+                        { time: now - 5000, temp: temp }, // Point 5 seconds ago
+                        { time: now, temp: temp }          // Current point
+                    ];
+                }
+            });
+            if (Object.keys(chartData).length > 0) {
+                updateChartSensorList();
+                drawChart();
+            }
+        }
+    } catch (error) {
+        // Ignore chart history errors
+    }
+}
+
+function updateChartData() {
+    if (sensors.length === 0) return;
+    
+    const now = Date.now();
+    const maxAge = 30 * 60 * 1000; // Keep 30 minutes
+    const minInterval = 60 * 1000; // Minimum 1 minute between points
+    const minTempChange = 0.1; // Minimum 0.1°C change to store
+    
+    let hasUpdates = false;
+    
+    sensors.forEach(sensor => {
+        if (!sensor.connected || sensor.temperature === -127) return;
+        
+        if (!chartData[sensor.address]) {
+            chartData[sensor.address] = [];
+        }
+        
+        const data = chartData[sensor.address];
+        const roundedTemp = Math.round(sensor.temperature * 10) / 10;
+        
+        // Store if: first/second point, OR 5 min passed (stable temp), OR (1 min passed AND temp changed)
+        let shouldStore = false;
+        
+        if (data.length === 0) {
+            shouldStore = true; // First point - always store
+        } else if (data.length === 1) {
+            shouldStore = true; // Second point - ensure we can draw a line
+        } else {
+            const lastPoint = data[data.length - 1];
+            const timeSinceLastPoint = now - lastPoint.time;
+            const tempDiff = Math.abs(roundedTemp - lastPoint.temp);
+            
+            // Store if: 5 minutes passed (keep stable temps visible) OR (1 min + temp changed)
+            if (timeSinceLastPoint >= 5 * 60 * 1000) {
+                shouldStore = true; // Force point every 5 minutes for stable temps
+            } else if (timeSinceLastPoint >= minInterval && tempDiff >= minTempChange) {
+                shouldStore = true; // Temp changed significantly
+            }
+        }
+        
+        if (shouldStore) {
+            data.push({ time: now, temp: roundedTemp });
+            hasUpdates = true;
+        }
+        
+        // Remove old data
+        while (data.length > 0 && now - data[0].time > maxAge) {
+            data.shift();
+            hasUpdates = true;
+        }
+    });
+    
+    // Redraw chart periodically (every 30 sec) or when data changes
+    const timeSinceLastRedraw = now - lastChartRedraw;
+    if (hasUpdates || timeSinceLastRedraw >= 30000) {
+        if (hasUpdates) {
+            updateChartSensorList();
+        }
+        drawChart();
+        lastChartRedraw = now;
+    }
+}
+
+function updateChartSensorList() {
+    const select = document.getElementById('chartSensor');
+    if (!select) return;
+    
+    const currentValue = select.value;
+    
+    // Rebuild options from chartData (works even when sensors array is not populated yet)
+    let html = '<option value="">All Sensors</option>';
+    
+    Object.keys(chartData).forEach(address => {
+        if (chartData[address] && chartData[address].length > 0) {
+            // Try to find sensor name from sensors array
+            const sensor = sensors.find(s => s.address === address);
+            const name = sensor ? escapeHtml(sensor.name || 'Sensor') : 'Sensor';
+            html += `<option value="${address}">${name}</option>`;
+        }
+    });
+    
+    select.innerHTML = html;
+    select.value = currentValue;
+}
+
+function drawChart() {
+    const svg = document.getElementById('tempChart');
+    if (!svg) return;
+    
+    // Responsive sizing - use smaller width on mobile for better proportions
+    const isMobile = window.innerWidth < 768;
+    const width = isMobile ? 400 : 800;
+    const height = isMobile ? 400 : 300;
+    const padding = { top: 20, right: isMobile ? 60 : 80, bottom: 30, left: 50 };
+    const chartWidth = width - padding.left - padding.right;
+    const chartHeight = height - padding.top - padding.bottom;
+    
+    // Update SVG viewBox
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    
+    // Clear
+    svg.innerHTML = '';
+    
+    // Get data to display
+    let dataToPlot = [];
+    let commonStartTime = 0;
+    
+    if (chartSelectedSensor) {
+        // Single sensor: show all its data
+        const data = chartData[chartSelectedSensor];
+        if (data && data.length > 0) {
+            const sensor = sensors.find(s => s.address === chartSelectedSensor);
+            const color = '#3b82f6';
+            dataToPlot.push({ sensor, data, color });
+        }
+    } else {
+        // All sensors: find common time range (latest start time)
+        const colors = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+        let colorIndex = 0;
+        
+        // Plot all data that exists in chartData, even if sensors array is empty
+        Object.keys(chartData).forEach(address => {
+            const data = chartData[address];
+            if (data && data.length > 0) {
+                const sensor = sensors.find(s => s.address === address) || { address, name: 'Sensor' };
+                const sensorStartTime = data[0].time;
+                if (sensorStartTime > commonStartTime) {
+                    commonStartTime = sensorStartTime;
+                }
+            }
+        });
+        
+        // Filter each sensor's data to only show from common start time
+        Object.keys(chartData).forEach(address => {
+            const data = chartData[address];
+            if (data && data.length > 0) {
+                const filteredData = data.filter(point => point.time >= commonStartTime);
+                if (filteredData.length > 0) {
+                    const sensor = sensors.find(s => s.address === address) || { address, name: 'Sensor' };
+                    dataToPlot.push({ 
+                        sensor, 
+                        data: filteredData, 
+                        color: colors[colorIndex % colors.length] 
+                    });
+                    colorIndex++;
+                }
+            }
+        });
+    }
+    
+    if (dataToPlot.length === 0) {
+        const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        text.setAttribute('x', width / 2);
+        text.setAttribute('y', height / 2);
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('fill', '#64748b');
+        text.textContent = 'No data yet';
+        svg.appendChild(text);
+        return;
+    }
+    
+    // Find min/max
+    let minTime = Infinity, maxTime = -Infinity;
+    let minTemp = Infinity, maxTemp = -Infinity;
+    
+    dataToPlot.forEach(({ data }) => {
+        data.forEach(point => {
+            if (point.time < minTime) minTime = point.time;
+            if (point.time > maxTime) maxTime = point.time;
+            if (point.temp < minTemp) minTemp = point.temp;
+            if (point.temp > maxTemp) maxTemp = point.temp;
+        });
+    });
+    
+    // Add padding to temp range
+    const tempRange = maxTemp - minTemp;
+    if (tempRange < 1) {
+        minTemp -= 0.5;
+        maxTemp += 0.5;
+    } else {
+        minTemp -= tempRange * 0.1;
+        maxTemp += tempRange * 0.1;
+    }
+    
+    const timeRange = maxTime - minTime || 1;
+    
+    // Scales
+    const xScale = (time) => padding.left + ((time - minTime) / timeRange) * chartWidth;
+    const yScale = (temp) => padding.top + chartHeight - ((temp - minTemp) / (maxTemp - minTemp)) * chartHeight;
+    
+    // Background
+    const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    bg.setAttribute('x', padding.left);
+    bg.setAttribute('y', padding.top);
+    bg.setAttribute('width', chartWidth);
+    bg.setAttribute('height', chartHeight);
+    bg.setAttribute('fill', '#0f172a');
+    bg.setAttribute('stroke', '#334155');
+    svg.appendChild(bg);
+    
+    // Grid lines (horizontal)
+    const tempStep = Math.ceil((maxTemp - minTemp) / 5);
+    for (let i = 0; i <= 5; i++) {
+        const temp = minTemp + (maxTemp - minTemp) * (i / 5);
+        const y = yScale(temp);
+        
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', padding.left);
+        line.setAttribute('y1', y);
+        line.setAttribute('x2', padding.left + chartWidth);
+        line.setAttribute('y2', y);
+        line.setAttribute('stroke', '#334155');
+        line.setAttribute('stroke-width', '1');
+        svg.appendChild(line);
+        
+        const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        label.setAttribute('x', padding.left - 10);
+        label.setAttribute('y', y + 4);
+        label.setAttribute('text-anchor', 'end');
+        label.setAttribute('fill', '#64748b');
+        label.setAttribute('font-size', '12');
+        label.textContent = temp.toFixed(1) + '°';
+        svg.appendChild(label);
+    }
+    
+    // Draw lines
+    dataToPlot.forEach(({ sensor, data, color }) => {
+        if (data.length === 0) return;
+        
+        // Draw a dot if only one point
+        if (data.length === 1) {
+            const x = xScale(data[0].time);
+            const y = yScale(data[0].temp);
+            const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            circle.setAttribute('cx', x);
+            circle.setAttribute('cy', y);
+            circle.setAttribute('r', '4');
+            circle.setAttribute('fill', color);
+            svg.appendChild(circle);
+            return;
+        }
+        
+        let pathData = '';
+        data.forEach((point, i) => {
+            const x = xScale(point.time);
+            const y = yScale(point.temp);
+            pathData += (i === 0 ? 'M' : 'L') + x + ',' + y + ' ';
+        });
+        
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', pathData);
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke', color);
+        path.setAttribute('stroke-width', '2');
+        svg.appendChild(path);
+    });
+    
+    // Legend
+    if (!chartSelectedSensor && dataToPlot.length > 1) {
+        dataToPlot.forEach(({ sensor, color }, i) => {
+            const y = padding.top + i * 20;
+            
+            const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+            rect.setAttribute('x', width - padding.right + 10);
+            rect.setAttribute('y', y - 8);
+            rect.setAttribute('width', 12);
+            rect.setAttribute('height', 12);
+            rect.setAttribute('fill', color);
+            svg.appendChild(rect);
+            
+            const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            label.setAttribute('x', width - padding.right + 26);
+            label.setAttribute('y', y + 3);
+            label.setAttribute('fill', '#cbd5e1');
+            label.setAttribute('font-size', '11');
+            label.textContent = sensor.name || 'Sensor';
+            svg.appendChild(label);
+        });
+    }
+    
+    // Time labels
+    const now = new Date();
+    const labelCount = 4;
+    for (let i = 0; i <= labelCount; i++) {
+        const time = minTime + (timeRange * i / labelCount);
+        const x = xScale(time);
+        const date = new Date(time);
+        const timeStr = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+        
+        const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        label.setAttribute('x', x);
+        label.setAttribute('y', height - 8);
+        label.setAttribute('text-anchor', 'middle');
+        label.setAttribute('fill', '#64748b');
+        label.setAttribute('font-size', '12');
+        label.textContent = timeStr;
+        svg.appendChild(label);
+    }
 }
 
 // ============================================================================

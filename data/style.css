@@ -475,15 +475,32 @@ body {
     border-color: #dc2626;
 }
 
-.summary-card.pinned-card {
-    cursor: pointer;
-    background: linear-gradient(135deg, var(--primary-dark) 0%, var(--primary) 100%);
-}
-
 .summary-card.pinned-card.no-pin {
     opacity: 0.7;
     background: var(--bg-card);
     border: 2px dashed var(--border-color);
+}
+
+.pin-icon-btn {
+    cursor: pointer;
+    transition: var(--transition);
+    user-select: none;
+    border: 2px solid var(--primary);
+    border-radius: var(--radius-md);
+    padding: var(--space-xs);
+    background: rgba(59, 130, 246, 0.1);
+}
+
+.pin-icon-btn:hover {
+    transform: scale(1.1);
+    background: rgba(59, 130, 246, 0.2);
+    border-color: var(--primary-light);
+    box-shadow: 0 0 8px rgba(59, 130, 246, 0.3);
+}
+
+.pin-icon-btn:active {
+    transform: scale(1.05);
+    background: rgba(59, 130, 246, 0.3);
 }
 
 @media (min-width: 640px) {
@@ -1142,6 +1159,10 @@ body {
         grid-template-columns: repeat(2, 1fr);
     }
     
+    .summary-card {
+        display: flex; /* Ensure cards are visible */
+    }
+    
     .sensor-grid {
         grid-template-columns: 1fr;
     }
@@ -1163,4 +1184,60 @@ body {
     .sensor-temperature {
         font-size: 2rem;
     }
+    
+    /* Expand chart on mobile - full width with better visibility */
+    .section:has(.chart-container) {
+        padding: 1rem 0;
+    }
+    
+    .section:has(.chart-container) .section-header {
+        padding: 0 1rem;
+        margin-bottom: 0.5rem;
+    }
+    
+    .chart-sensor-select {
+        font-size: 0.85rem;
+        padding: 0.4rem;
+    }
+    
+    .chart-container {
+        margin: 0.5rem 0;
+        padding: 0.5rem;
+        border-radius: var(--radius-sm);
+        background: var(--bg-secondary);
+    }
+    
+    .chart-container svg {
+        min-height: 400px;
+        width: 100%;
+        height: 400px;
+    }
+}
+
+/* ============================================================================
+   Temperature Chart
+   ============================================================================ */
+
+.chart-sensor-select {
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 0.5rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.9rem;
+}
+
+.chart-container {
+    margin-top: 1rem;
+    background: var(--bg-secondary);
+    border-radius: var(--radius-md);
+    padding: 1rem;
+    overflow-x: auto;
+}
+
+.chart-container svg {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    min-height: 200px;
 }
