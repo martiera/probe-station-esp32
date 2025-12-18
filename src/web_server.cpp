@@ -32,6 +32,18 @@ WebServer::WebServer() :
 // Public Methods
 // ============================================================================
 
+// Minimum heap required to accept new requests (used for load checking)
+static constexpr uint32_t MIN_HEAP_FOR_REQUEST = 30000;
+
+// Request filter function to limit connections based on available heap
+static bool heapFilter(AsyncWebServerRequest* request) {
+    if (ESP.getFreeHeap() < MIN_HEAP_FOR_REQUEST) {
+        request->send(503, "text/plain", "Server busy");
+        return false;
+    }
+    return true;
+}
+
 void WebServer::begin() {
     // WebSocket disabled to save memory (~4-8KB)
     // Using API polling instead
@@ -301,13 +313,31 @@ void WebServer::setupRoutes() {
 }
 
 void WebServer::setupStaticFiles() {
-    // Serve static files from SPIFFS
-    // AsyncWebServer automatically serves .gz versions if they exist
-    // Version is baked into HTML at build time (?v=X.Y.Z on CSS/JS links)
-    // so we can use aggressive caching - version change = new URL = cache miss
+    // Serve HTML with no-cache to always fetch latest (with version query strings)
+    _server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
+        // Check heap before processing - return 503 if too low
+        if (ESP.getFreeHeap() < MIN_HEAP_FOR_REQUEST) {
+            request->send(503, "text/plain", "Server busy, try again");
+            return;
+        }
+        AsyncWebServerResponse* response = request->beginResponse(SPIFFS, "/index.html", "text/html");
+        response->addHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        response->addHeader("Pragma", "no-cache");
+        response->addHeader("Expires", "0");
+        response->addHeader("Connection", "close"); // Force connection close to prevent buildup
+        request->send(response);
+    });
+    
+    // Serve CSS/JS with version query strings - aggressive caching
+    // Version change = new URL = cache miss
+    _server.serveStatic("/style.css", SPIFFS, "/style.css")
+        .setCacheControl("max-age=31536000"); // 1 year
+    _server.serveStatic("/app.js", SPIFFS, "/app.js")
+        .setCacheControl("max-age=31536000"); // 1 year
+    
+    // Other static files with moderate caching
     _server.serveStatic("/", SPIFFS, "/")
-        .setDefaultFile("index.html")
-        .setCacheControl("max-age=86400");
+        .setCacheControl("max-age=3600");
 }
 
 // ============================================================================
@@ -315,6 +345,8 @@ void WebServer::setupStaticFiles() {
 // ============================================================================
 
 void WebServer::handleGetStatus(AsyncWebServerRequest* request) {
+    if (!checkServerLoad(request)) return;
+    
     JsonDocument doc;
     
     // Device info
@@ -355,6 +387,8 @@ void WebServer::handleGetStatus(AsyncWebServerRequest* request) {
 }
 
 void WebServer::handleGetSensors(AsyncWebServerRequest* request) {
+    if (!checkServerLoad(request)) return;
+    
     JsonDocument doc;
     JsonArray sensors = doc.to<JsonArray>();
     
@@ -369,6 +403,8 @@ void WebServer::handleGetSensors(AsyncWebServerRequest* request) {
 }
 
 void WebServer::handleGetSensor(AsyncWebServerRequest* request, uint8_t sensorIndex) {
+    if (!checkServerLoad(request)) return;
+    
     if (sensorIndex >= sensorManager.getSensorCount()) {
         sendError(request, 404, "Sensor not found");
         return;
@@ -837,17 +873,23 @@ void WebServer::handleGetOtaInfo(AsyncWebServerRequest* request) {
     OTAReleaseInfo info;
     otaManager.getReleaseInfoCopy(info);
 
-    doc["latest"]["tag"] = info.tag;
-    doc["latest"]["name"] = info.name;
-    doc["latest"]["notes"] = info.body;
-    doc["latest"]["readme"] = info.readme;
-    doc["latest"]["assets"]["firmware"] = info.firmwareUrl.length() > 0;
-    doc["latest"]["assets"]["spiffs"] = info.spiffsUrl.length() > 0;
+    // Don't show cached release info while actively checking
+    if (p.state == OTAState::CHECKING) {
+        doc["latest"]["tag"] = "";
+        doc["latest"]["name"] = "";
+        doc["latest"]["assets"]["firmware"] = false;
+        doc["latest"]["assets"]["spiffs"] = false;
+        doc["updateAvailable"] = false;
+    } else {
+        doc["latest"]["tag"] = info.tag;
+        doc["latest"]["name"] = info.name;
+        // Notes and readme removed - not used by frontend
+        doc["latest"]["assets"]["firmware"] = info.firmwareUrl.length() > 0;
+        doc["latest"]["assets"]["spiffs"] = info.spiffsUrl.length() > 0;
+        doc["updateAvailable"] = otaManager.isUpdateAvailable();
+    }
 
     doc["configPreserved"] = true; // config stored in NVS
-
-    bool updateAvailable = (info.tag.length() > 0) && (String(FIRMWARE_VERSION) != info.tag);
-    doc["updateAvailable"] = updateAvailable;
 
     if (p.error[0] != '\0') {
         doc["error"] = p.error;
@@ -957,8 +999,20 @@ void WebServer::handleWsMessage(AsyncWebSocketClient* client, uint8_t* data, siz
 // Utility Methods
 // ============================================================================
 
+// Check if server has enough resources to handle request
+// Returns true if OK, false if 503 was sent
+bool WebServer::checkServerLoad(AsyncWebServerRequest* request) {
+    if (ESP.getFreeHeap() < MIN_HEAP_FOR_REQUEST) {
+        request->send(503, "text/plain", "Server busy");
+        return false;
+    }
+    return true;
+}
+
 void WebServer::sendJson(AsyncWebServerRequest* request, int code, const char* json) {
-    request->send(code, "application/json", json);
+    AsyncWebServerResponse* response = request->beginResponse(code, "application/json", json);
+    response->addHeader("Connection", "close"); // Force connection close to prevent TCP window overflow
+    request->send(response);
 }
 
 void WebServer::sendError(AsyncWebServerRequest* request, int code, const char* message) {
@@ -997,6 +1051,7 @@ void WebServer::buildSensorJson(JsonObject& obj, uint8_t sensorIndex) {
     obj["temperature"] = round(data->temperature * 100) / 100.0;
     obj["rawTemperature"] = round(data->rawTemperature * 100) / 100.0;
     obj["alarm"] = alarmStateToString(data->alarmState);
+    obj["lastReadMs"] = millis() - data->lastHistoryTime;  // Milliseconds since last read
     
     if (config) {
         obj["name"] = config->name;

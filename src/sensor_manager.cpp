@@ -196,9 +196,6 @@ void SensorManager::readTemperatures() {
         
         // Add to history
         addToHistory(i, _sensorData[i].temperature);
-        
-        // Update last read time
-        _sensorData[i].lastReadTime = millis();
     }
     
     _lastReadTime = millis();

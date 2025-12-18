@@ -131,8 +131,8 @@ constexpr uint32_t CONFIG_SAVE_DEBOUNCE = 5000;
 // ============================================================================
 
 // Number of historical temperature readings to store per sensor
-// History is stored: every 1 min if temp changed >= 0.1°C, or every 5 min if stable
-// 30 slots = up to 30 minutes (if temp changes every minute) or 150 minutes (if stable)
+// History is stored: first reading, then every 1 min if temp changed >= 0.1°C, or every 5 min if stable
+// 30 slots = 30 minutes (if temp changes every minute) to 150 minutes (if stable)
 constexpr uint16_t TEMP_HISTORY_SIZE = 30;
 
 // ============================================================================

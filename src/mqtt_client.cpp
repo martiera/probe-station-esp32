@@ -44,8 +44,8 @@ void MQTTClient::begin() {
     _client.setCallback(messageCallback);
     _client.setKeepAlive(MQTT_KEEP_ALIVE);
     
-    // Buffer size for larger messages (HA discovery)
-    _client.setBufferSize(512);
+    // Buffer size for larger messages (HA discovery payloads can be 600+ bytes)
+    _client.setBufferSize(1024);
 }
 
 void MQTTClient::setOtaMode(bool enabled) {
@@ -151,8 +151,12 @@ void MQTTClient::publishTemperatures() {
             continue;
         }
         
-        // Check if we should publish based on change threshold
-        if (config.publishOnChange && !shouldPublishTemperature(i, data->temperature)) {
+        // Always publish first reading (when _lastPublishedTemp is TEMP_INVALID)
+        // Then check change threshold if publishOnChange is enabled
+        bool isFirstPublish = (_lastPublishedTemp[i] == TEMP_INVALID);
+        bool shouldPublish = isFirstPublish || !config.publishOnChange || shouldPublishTemperature(i, data->temperature);
+        
+        if (!shouldPublish) {
             continue;
         }
         
@@ -490,15 +494,9 @@ void MQTTClient::publishHADiscoverySensor(uint8_t sensorIndex) {
     const SystemConfig& sysConfig = configManager.getSystemConfig();
     const MQTTConfig& mqttConfig = configManager.getMQTTConfig();
     
-    // Generate unique ID
-    char uniqueId[48];
-    snprintf(uniqueId, sizeof(uniqueId), "esp32_temp_%s_%s", 
-        WiFi.macAddress().c_str(), data->addressStr);
-    
-    // Remove colons from MAC
-    for (char* p = uniqueId; *p; p++) {
-        if (*p == ':') *p = '_';
-    }
+    // Generate unique ID (sensor address is globally unique)
+    char uniqueId[32];
+    snprintf(uniqueId, sizeof(uniqueId), "sensor_%s", data->addressStr);
     
     // Sensor name
     char sensorName[64];
@@ -529,13 +527,20 @@ void MQTTClient::publishHADiscoverySensor(uint8_t sensorIndex) {
     doc["device_class"] = "temperature";
     doc["state_class"] = "measurement";
     
-    // Device info
+    // Device info - all sensors share the same device (the ESP32 hardware)
     JsonObject device = doc["device"].to<JsonObject>();
-    device["identifiers"][0] = WiFi.macAddress();
-    device["name"] = sysConfig.deviceName;
-    device["model"] = "ESP32 Temperature Monitor";
-    device["manufacturer"] = "DIY";
-    device["sw_version"] = FIRMWARE_VERSION;
+    {
+        // Stable device identifier (ESP MAC) - all sensors use the same device
+        JsonArray identifiers = device["identifiers"].to<JsonArray>();
+        identifiers.add(String("probe-station-") + WiFi.macAddress());
+
+        device["name"] = sysConfig.deviceName;
+        device["manufacturer"] = "martiera";
+        device["model"] = "probe-station-esp32";
+        device["sw_version"] = FIRMWARE_VERSION;
+        device["hw_version"] = ESP.getChipModel();
+        device["configuration_url"] = String("http://") + wifiManager.getIP().toString() + "/";
+    }
     
     // Availability
     char availTopic[128];
@@ -544,8 +549,12 @@ void MQTTClient::publishHADiscoverySensor(uint8_t sensorIndex) {
     doc["availability_topic"] = availTopic;
     doc["availability_template"] = "{{ 'online' if value_json.online else 'offline' }}";
     
-    char payload[512];
-    serializeJson(doc, payload, sizeof(payload));
+    char payload[768];
+    size_t len = serializeJson(doc, payload, sizeof(payload));
+    
+    if (len >= sizeof(payload) - 1) {
+        Serial.printf("[MQTT] WARNING: Discovery payload truncated! (%d bytes)\n", len);
+    }
     
     _client.publish(discoveryTopic, payload, true);
     Serial.printf("[MQTT] Published HA discovery for sensor %d\n", sensorIndex);

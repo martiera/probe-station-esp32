@@ -51,7 +51,6 @@ struct SensorData {
     AlarmState alarmState;                   // Current alarm state
     AlarmState prevAlarmState;               // Previous alarm state (for change detection)
     bool connected;                          // Whether sensor is currently responding
-    uint32_t lastReadTime;                   // Last successful read timestamp
     uint32_t errorCount;                     // Consecutive error count
     
     SensorData() : 
@@ -64,7 +63,6 @@ struct SensorData {
         alarmState(AlarmState::SENSOR_ERROR),
         prevAlarmState(AlarmState::SENSOR_ERROR),
         connected(false),
-        lastReadTime(0),
         errorCount(0) {
         addressStr[0] = '\0';
         memset(address, 0, sizeof(address));

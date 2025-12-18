@@ -28,6 +28,41 @@ constexpr uint32_t RELEASE_INFO_TTL_MS = 5UL * 60UL * 1000UL; // 5 min
 constexpr uint32_t AUTO_CHECK_INTERVAL_MS = 24UL * 60UL * 60UL * 1000UL; // 24 hours
 constexpr uint32_t HTTP_TIMEOUT_MS = 15000;
 
+// Parse version string (e.g., "v1.0.7" or "1.0.7") into comparable integer
+// Returns: major*10000 + minor*100 + patch
+int parseVersionNumber(const String& version) {
+    String v = version;
+    if (v.startsWith("v") || v.startsWith("V")) {
+        v = v.substring(1);
+    }
+    
+    int major = 0, minor = 0, patch = 0;
+    int dotCount = 0;
+    int value = 0;
+    
+    for (size_t i = 0; i < v.length(); i++) {
+        char c = v.charAt(i);
+        if (c >= '0' && c <= '9') {
+            value = value * 10 + (c - '0');
+        } else if (c == '.') {
+            if (dotCount == 0) major = value;
+            else if (dotCount == 1) minor = value;
+            value = 0;
+            dotCount++;
+        } else {
+            // Stop at first non-numeric, non-dot character
+            break;
+        }
+    }
+    
+    // Last segment is patch
+    if (dotCount == 2) patch = value;
+    else if (dotCount == 1) minor = value;
+    else if (dotCount == 0) major = value;
+    
+    return major * 10000 + minor * 100 + patch;
+}
+
 // URL parsing helper (from ESP_OTA_GitHub approach)
 struct UrlDetails {
     String proto;
@@ -133,6 +168,14 @@ bool resolveRedirects(const String& startUrl, String& finalUrl, String& error) {
             }
         }
         
+        // Properly close connection before stopping to avoid TCP assertion
+        // Issue: tcp_recved called on listen-pcb when stop() is called
+        if (client->connected()) {
+            // Read and discard any remaining data to properly close connection
+            while (client->available()) {
+                client->read();
+            }
+        }
         client->stop();
         delete client;
         client = nullptr;
@@ -188,16 +231,7 @@ String githubApiLatestReleaseUrl() {
     return url;
 }
 
-String githubRawReadmeUrl(const String& tag) {
-    String url = "https://raw.githubusercontent.com/";
-    url += GITHUB_OWNER;
-    url += "/";
-    url += GITHUB_REPO;
-    url += "/";
-    url += tag;
-    url += "/README.md";
-    return url;
-}
+// ============================================================================
 
 bool httpGetToString(const String& url, String& out, String& error, size_t maxBytes) {
     WiFiClientSecure client;
@@ -279,14 +313,19 @@ void OTAManager::begin() {
 }
 
 void OTAManager::checkOnBoot() {
-    // Trigger initial check after a short delay (WiFi should be connected)
-    _lastAutoCheck = millis() - AUTO_CHECK_INTERVAL_MS + 30000; // Check in 30 seconds
-    Serial.println("[OTA] Boot check scheduled in 30 seconds");
+    // Trigger initial check after delay to ensure network stack is fully ready
+    _lastAutoCheck = millis() - AUTO_CHECK_INTERVAL_MS + 90000; // Check in 90 seconds
+    Serial.println("[OTA] Boot check scheduled in 90 seconds");
 }
 
 bool OTAManager::isUpdateAvailable() const {
     if (_releaseMutex && xSemaphoreTake(_releaseMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        bool available = (_release.tag.length() > 0) && (String(FIRMWARE_VERSION) != _release.tag);
+        bool available = false;
+        if (_release.tag.length() > 0) {
+            int currentVersion = parseVersionNumber(String(FIRMWARE_VERSION));
+            int latestVersion = parseVersionNumber(_release.tag);
+            available = (latestVersion > currentVersion);
+        }
         xSemaphoreGive(_releaseMutex);
         return available;
     }
@@ -422,6 +461,7 @@ bool OTAManager::ensureReleaseInfoFresh(bool force, String& error) {
     }
 
     setProgress(OTAState::CHECKING, 0, "Checking GitHub releases...");
+    // 8KB stack is sufficient now that we removed body/readme fetching
     BaseType_t ok = xTaskCreatePinnedToCore(checkThunk, "ota_check", 8192, this, 1, &_checkTask, 0);
     if (ok != pdPASS) {
         _checkTask = nullptr;
@@ -454,11 +494,6 @@ void OTAManager::runCheckTask(bool force) {
 
     Serial.printf("[OTA] Found release: %s\n", next.tag.c_str());
 
-    if (next.body.length() == 0) {
-        String readmeErr;
-        fetchReadmeForTag(next, next.tag, readmeErr);
-    }
-
     next.fetchedAtMs = millis();
     if (_releaseMutex && xSemaphoreTake(_releaseMutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
         _release = next;
@@ -472,14 +507,15 @@ void OTAManager::runCheckTask(bool force) {
 
 bool OTAManager::fetchLatestReleaseFromGitHub(OTAReleaseInfo& into, String& error) {
     String payload;
-    if (!httpGetToString(githubApiLatestReleaseUrl(), payload, error, 32 * 1024)) {
+    // Reduced buffer from 32KB to 8KB - we only need version and asset URLs
+    if (!httpGetToString(githubApiLatestReleaseUrl(), payload, error, 8 * 1024)) {
         return false;
     }
 
     JsonDocument filter;
     filter["tag_name"] = true;
     filter["name"] = true;
-    filter["body"] = true;
+    // Removed body field - not needed
     filter["assets"][0]["name"] = true;
     filter["assets"][0]["browser_download_url"] = true;
 
@@ -499,10 +535,8 @@ bool OTAManager::fetchLatestReleaseFromGitHub(OTAReleaseInfo& into, String& erro
 
     into.tag = normalizeTagToVersion(tag);
     into.name = (const char*)(doc["name"] | "");
-    into.body = (const char*)(doc["body"] | "");
     into.firmwareUrl = "";
     into.spiffsUrl = "";
-    into.readme = "";
 
     if (doc["assets"].is<JsonArrayConst>()) {
         for (JsonObjectConst a : doc["assets"].as<JsonArrayConst>()) {
@@ -516,15 +550,6 @@ bool OTAManager::fetchLatestReleaseFromGitHub(OTAReleaseInfo& into, String& erro
             }
         }
     }
-    return true;
-}
-
-bool OTAManager::fetchReadmeForTag(OTAReleaseInfo& into, const String& tag, String& error) {
-    String out;
-    if (!httpGetToString(githubRawReadmeUrl(tag), out, error, 24 * 1024)) {
-        return false;
-    }
-    into.readme = out;
     return true;
 }
 

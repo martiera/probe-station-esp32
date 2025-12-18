@@ -305,7 +305,7 @@ bool ConfigManager::fromJson(const JsonDocument& doc) {
         if (sys["deviceName"].is<const char*>()) {
             strncpy(_systemConfig.deviceName, sys["deviceName"] | "TempMonitor", 32);
         }
-        _systemConfig.readInterval = sys["readInterval"] | 2;
+        _systemConfig.readInterval = sys["readInterval"] | 5;
         _systemConfig.celsiusUnits = sys["celsiusUnits"] | true;
         _systemConfig.utcOffset = sys["utcOffset"] | 0;
         _systemConfig.otaEnabled = sys["otaEnabled"] | true;

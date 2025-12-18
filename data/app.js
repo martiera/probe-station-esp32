@@ -7,7 +7,7 @@
 // Configuration
 // ============================================================================
 
-const SENSOR_POLL_INTERVAL = 3000; // Poll sensors every 3 seconds
+let SENSOR_POLL_INTERVAL = 5000; // Poll sensors dynamically based on readInterval (default 5s)
 const STATUS_UPDATE_INTERVAL = 30000;
 
 // ============================================================================
@@ -18,6 +18,7 @@ let sensors = [];
 let systemStatus = null;
 let sensorPollTimer = null;
 let pinnedSensorAddress = null;  // Loaded from server, not localStorage
+let sensorOrder = [];  // Array of sensor addresses in display order
 
 function safeLocalStorageGet(key) {
     try {
@@ -47,6 +48,22 @@ let otaPollTimer = null;
 let otaLastProgress = -1;
 let otaLastProgressTime = 0;
 const OTA_PROGRESS_TIMEOUT_MS = 60000; // 1 minute timeout if no progress
+
+// Parse version string (e.g., "v1.0.7" or "1.0.7") into comparable number
+function parseVersion(version) {
+    if (!version) return 0;
+    let v = version.replace(/^v/i, ''); // Remove 'v' prefix
+    let parts = v.split(/[.-]/); // Split on dot or dash
+    let major = parseInt(parts[0]) || 0;
+    let minor = parseInt(parts[1]) || 0;
+    let patch = parseInt(parts[2]) || 0;
+    return major * 10000 + minor * 100 + patch;
+}
+
+// Compare two version strings: returns >0 if v1 > v2, <0 if v1 < v2, 0 if equal
+function compareVersions(v1, v2) {
+    return parseVersion(v1) - parseVersion(v2);
+}
 
 // Chart state
 let chartData = {}; // {address: [{time, temp}, ...]}
@@ -129,8 +146,17 @@ async function loadOtaInfo(force = false) {
                 document.getElementById('otaStatus').textContent = `New version ${info.latest.tag} available`;
                 btn.disabled = false;
                 btn.textContent = '⬆️ Install Update';
+            } else if (info.latest && info.latest.tag) {
+                // Latest version is fetched but not newer
+                if (compareVersions(info.current, info.latest.tag) > 0) {
+                    document.getElementById('otaStatus').textContent = `You have a newer version (${info.current} > ${info.latest.tag})`;
+                } else {
+                    document.getElementById('otaStatus').textContent = 'You have the latest version';
+                }
+                btn.disabled = false;
+                btn.textContent = '🔄 Check for Updates';
             } else {
-                document.getElementById('otaStatus').textContent = 'You have the latest version';
+                document.getElementById('otaStatus').textContent = 'No release information available';
                 btn.disabled = false;
                 btn.textContent = '🔄 Check for Updates';
             }
@@ -366,6 +392,10 @@ async function loadSensors() {
     try {
         const data = await apiGet('sensors');
         sensors = data;
+        
+        // Apply custom order
+        applySensorOrder();
+        
         updateSensorDisplay();
         
         // Calculate summary
@@ -736,7 +766,8 @@ function updateSensorList() {
     }
     
     list.innerHTML = sensors.map((sensor, index) => `
-        <div class="sensor-list-item">
+        <div class="sensor-list-item" draggable="true" data-address="${sensor.address}">
+            <div class="drag-handle" title="Drag to reorder">⋮⋮</div>
             <div class="sensor-list-info">
                 <div class="sensor-list-name">${escapeHtml(sensor.name || `Sensor ${index + 1}`)}</div>
                 <div class="sensor-list-details">
@@ -747,6 +778,9 @@ function updateSensorList() {
             <button class="btn btn-secondary" onclick="editSensor(${index})">Edit</button>
         </div>
     `).join('');
+    
+    // Attach drag-and-drop event listeners
+    attachDragListeners();
 }
 
 function updateCalibrationList() {
@@ -1139,24 +1173,55 @@ async function saveMqttConfig() {
 
 function populateSystemForm(config) {
     document.getElementById('deviceNameInput').value = config.deviceName || '';
-    document.getElementById('readInterval').value = config.readInterval || 2;
+    document.getElementById('readInterval').value = config.readInterval || 5;
     document.getElementById('celsiusUnits').checked = config.celsiusUnits;
     
     // Load pinned sensor from server config
     pinnedSensorAddress = config.pinnedSensorAddress || null;
     if (pinnedSensorAddress === '') pinnedSensorAddress = null;
+    
+    // Update frontend poll interval based on ESP32 read interval
+    updatePollInterval(config.readInterval || 5);
+}
+
+function updatePollInterval(readInterval) {
+    // Set frontend poll to match ESP32 read interval (in milliseconds)
+    SENSOR_POLL_INTERVAL = readInterval * 1000;
+    
+    // Restart sensor polling with new interval
+    if (sensorPollTimer) {
+        clearInterval(sensorPollTimer);
+        sensorPollTimer = setInterval(loadSensors, SENSOR_POLL_INTERVAL);
+    }
 }
 
 async function saveSystemConfig() {
+    let readInterval = parseInt(document.getElementById('readInterval').value);
+    
+    // Validate read interval (minimum 5 seconds, maximum 300)
+    if (isNaN(readInterval) || readInterval < 5) {
+        readInterval = 5;
+        document.getElementById('readInterval').value = 5;
+        showToast('Read interval must be at least 5 seconds', 'warning');
+    } else if (readInterval > 300) {
+        readInterval = 300;
+        document.getElementById('readInterval').value = 300;
+        showToast('Read interval cannot exceed 300 seconds', 'warning');
+    }
+    
     const data = {
         deviceName: document.getElementById('deviceNameInput').value,
-        readInterval: parseInt(document.getElementById('readInterval').value),
+        readInterval: readInterval,
         celsiusUnits: document.getElementById('celsiusUnits').checked
     };
     
     try {
         await apiPost('config/system', data);
         showToast('System configuration saved', 'success');
+        
+        // Update frontend poll interval
+        updatePollInterval(readInterval);
+        
         loadStatus();
     } catch (error) {
         showToast('Error saving system configuration', 'error');
@@ -1252,7 +1317,6 @@ async function loadChartHistory() {
         if (!sensorData || sensorData.length === 0) return;
         
         const now = Date.now();
-        const historyInterval = 2000; // ESP32 reads every ~2 seconds
         let hasAnyData = false;
         
         // Load history for each sensor
@@ -1261,17 +1325,33 @@ async function loadChartHistory() {
                 const history = await apiGet(`history/${index}`);
                 if (!history || history.length === 0) return;
                 
-                // Convert history array to timestamped data
-                // History is ordered Oldest -> Newest
+                // Calculate intervals based on temp changes (ESP32 logic: 1min if changed, 5min if stable)
+                const intervals = [0]; // First point has no interval before it
+                for (let i = 1; i < history.length; i++) {
+                    const prevTemp = Math.round(history[i - 1] * 10) / 10;
+                    const currTemp = Math.round(history[i] * 10) / 10;
+                    const tempDiff = Math.abs(currTemp - prevTemp);
+                    intervals.push(tempDiff >= 0.1 ? 60 * 1000 : 5 * 60 * 1000);
+                }
+
+                // Use lastReadMs from sensor to get accurate last reading time
+                const lastReadTime = now - (sensor.lastReadMs || 0);
+                
+                // Calculate cumulative time backwards from 'now'
+                const totalTime = intervals.reduce((sum, interval) => sum + interval, 0);
+                let accumulatedTime = lastReadTime - totalTime;
+                
+                // Convert history array to timestamped data (Oldest -> Newest)
                 const points = [];
                 for (let i = 0; i < history.length; i++) {
                     const temp = Math.round(history[i] * 10) / 10; // Round to 0.1°C
                     // Skip invalid temperatures
                     if (temp === -127 || temp < -55 || temp > 125) continue;
                     
-                    // Calculate time: last element is 'now', others are older
-                    const time = now - (history.length - 1 - i) * historyInterval;
-                    points.push({ time, temp });
+                    points.push({ time: accumulatedTime, temp });
+                    if (i < intervals.length - 1) {
+                        accumulatedTime += intervals[i + 1];
+                    }
                 }
                 
                 if (points.length > 0) {
@@ -1289,23 +1369,6 @@ async function loadChartHistory() {
         if (hasAnyData) {
             updateChartSensorList();
             drawChart();
-        } else {
-            // Create initial two points from current sensor readings to enable chart display
-            const now = Date.now();
-            sensorData.forEach(sensor => {
-                if (sensor.connected && sensor.temperature !== null && sensor.temperature !== -127 && 
-                    sensor.temperature >= -55 && sensor.temperature <= 125) {
-                    const temp = Math.round(sensor.temperature * 10) / 10;
-                    chartData[sensor.address] = [
-                        { time: now - 5000, temp: temp }, // Point 5 seconds ago
-                        { time: now, temp: temp }          // Current point
-                    ];
-                }
-            });
-            if (Object.keys(chartData).length > 0) {
-                updateChartSensorList();
-                drawChart();
-            }
         }
     } catch (error) {
         // Ignore chart history errors
@@ -1316,7 +1379,7 @@ function updateChartData() {
     if (sensors.length === 0) return;
     
     const now = Date.now();
-    const maxAge = 30 * 60 * 1000; // Keep 30 minutes
+    const maxAge = 150 * 60 * 1000; // Keep 150 minutes (matches ESP32 history: 30 points × 5min max)
     const minInterval = 60 * 1000; // Minimum 1 minute between points
     const minTempChange = 0.1; // Minimum 0.1°C change to store
     
@@ -1332,13 +1395,11 @@ function updateChartData() {
         const data = chartData[sensor.address];
         const roundedTemp = Math.round(sensor.temperature * 10) / 10;
         
-        // Store if: first/second point, OR 5 min passed (stable temp), OR (1 min passed AND temp changed)
+        // Store if: first point, OR 5 min passed (stable temp), OR (1 min passed AND temp changed)
         let shouldStore = false;
         
         if (data.length === 0) {
             shouldStore = true; // First point - always store
-        } else if (data.length === 1) {
-            shouldStore = true; // Second point - ensure we can draw a line
         } else {
             const lastPoint = data[data.length - 1];
             const timeSinceLastPoint = now - lastPoint.time;
@@ -1599,7 +1660,7 @@ function drawChart() {
         const time = minTime + (timeRange * i / labelCount);
         const x = xScale(time);
         const date = new Date(time);
-        const timeStr = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+        const timeStr = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
         
         const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
         label.setAttribute('x', x);
@@ -1610,6 +1671,121 @@ function drawChart() {
         label.textContent = timeStr;
         svg.appendChild(label);
     }
+}
+
+// ============================================================================
+// Sensor Ordering
+// ============================================================================
+
+function loadSensorOrder() {
+    const saved = safeLocalStorageGet('sensorOrder');
+    if (saved) {
+        try {
+            sensorOrder = JSON.parse(saved);
+        } catch (_) {
+            sensorOrder = [];
+        }
+    }
+}
+
+function saveSensorOrder() {
+    sensorOrder = sensors.map(s => s.address);
+    safeLocalStorageSet('sensorOrder', JSON.stringify(sensorOrder));
+}
+
+function applySensorOrder() {
+    if (sensorOrder.length === 0) {
+        loadSensorOrder();
+    }
+    
+    if (sensorOrder.length === 0) {
+        // First time - save current order
+        saveSensorOrder();
+        return;
+    }
+    
+    // Sort sensors by saved order
+    sensors.sort((a, b) => {
+        const indexA = sensorOrder.indexOf(a.address);
+        const indexB = sensorOrder.indexOf(b.address);
+        
+        // If address not in order, put at end
+        if (indexA === -1) return 1;
+        if (indexB === -1) return -1;
+        
+        return indexA - indexB;
+    });
+    
+    // Add any new sensors to the end of order
+    sensors.forEach(sensor => {
+        if (!sensorOrder.includes(sensor.address)) {
+            sensorOrder.push(sensor.address);
+        }
+    });
+    
+    // Remove sensors that no longer exist
+    sensorOrder = sensorOrder.filter(addr => 
+        sensors.some(s => s.address === addr)
+    );
+}
+
+let draggedElement = null;
+
+function attachDragListeners() {
+    const items = document.querySelectorAll('.sensor-list-item');
+    
+    items.forEach(item => {
+        item.addEventListener('dragstart', handleDragStart);
+        item.addEventListener('dragover', handleDragOver);
+        item.addEventListener('drop', handleDrop);
+        item.addEventListener('dragend', handleDragEnd);
+    });
+}
+
+function handleDragStart(e) {
+    draggedElement = this;
+    this.style.opacity = '0.4';
+    e.dataTransfer.effectAllowed = 'move';
+}
+
+function handleDragOver(e) {
+    if (e.preventDefault) {
+        e.preventDefault();
+    }
+    e.dataTransfer.dropEffect = 'move';
+    return false;
+}
+
+function handleDrop(e) {
+    if (e.stopPropagation) {
+        e.stopPropagation();
+    }
+    
+    if (draggedElement !== this) {
+        // Get addresses
+        const draggedAddr = draggedElement.getAttribute('data-address');
+        const targetAddr = this.getAttribute('data-address');
+        
+        // Find indices in sensors array
+        const draggedIdx = sensors.findIndex(s => s.address === draggedAddr);
+        const targetIdx = sensors.findIndex(s => s.address === targetAddr);
+        
+        // Reorder sensors array
+        const [removed] = sensors.splice(draggedIdx, 1);
+        sensors.splice(targetIdx, 0, removed);
+        
+        // Save new order
+        saveSensorOrder();
+        
+        // Update displays
+        updateSensorDisplay();
+    }
+    
+    return false;
+}
+
+function handleDragEnd(e) {
+    this.style.opacity = '1';
 }
 
 // ============================================================================

@@ -212,6 +212,12 @@ private:
     // ========================================================================
     
     /**
+     * Check if server has resources to handle request
+     * Returns true if OK, false if 503 was sent
+     */
+    bool checkServerLoad(AsyncWebServerRequest* request);
+    
+    /**
      * Send JSON response
      */
     void sendJson(AsyncWebServerRequest* request, int code, const char* json);
