@@ -335,7 +335,7 @@ bool ConfigManager::fromJson(const JsonDocument& doc) {
         strncpy(_mqttConfig.topicPrefix, mqtt["topicPrefix"] | MQTT_TOPIC_BASE, 64);
         _mqttConfig.enabled = mqtt["enabled"] | false;
         _mqttConfig.publishOnChange = mqtt["publishOnChange"] | true;
-        _mqttConfig.publishThreshold = mqtt["publishThreshold"] | 0.5f;
+        _mqttConfig.publishThreshold = mqtt["publishThreshold"] | 0.2f;
         _mqttConfig.publishInterval = mqtt["publishInterval"] | 10;
     }
     

@@ -84,7 +84,7 @@ struct MQTTConfig {
         port(MQTT_DEFAULT_PORT),
         enabled(false),
         publishOnChange(true),
-        publishThreshold(0.5f),
+        publishThreshold(0.2f),
         publishInterval(10) {
         server[0] = '\0';
         username[0] = '\0';
