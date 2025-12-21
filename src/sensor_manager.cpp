@@ -86,6 +86,19 @@ uint8_t SensorManager::discoverSensors() {
             continue;
         }
         
+        // Check for duplicate address (can happen with electrical issues)
+        bool isDuplicate = false;
+        for (uint8_t i = 0; i < _sensorCount; i++) {
+            if (memcmp(_sensorData[i].address, addr, sizeof(DeviceAddress)) == 0) {
+                isDuplicate = true;
+                break;
+            }
+        }
+        if (isDuplicate) {
+            Serial.printf("[SensorManager] Skipping duplicate sensor address\n");
+            continue;
+        }
+        
         // Copy address
         memcpy(_sensorData[_sensorCount].address, addr, sizeof(DeviceAddress));
         
