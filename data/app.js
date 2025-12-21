@@ -1440,22 +1440,28 @@ function updateChartSensorList() {
     const select = document.getElementById('chartSensor');
     if (!select) return;
     
-    const currentValue = select.value;
+    const currentValue = chartSelectedSensor; // Use the tracked variable, not DOM
     
     // Rebuild options from chartData (works even when sensors array is not populated yet)
     let html = '<option value="">All Sensors</option>';
     
-    Object.keys(chartData).forEach(address => {
+    const addresses = Object.keys(chartData);
+    addresses.forEach(address => {
         if (chartData[address] && chartData[address].length > 0) {
             // Try to find sensor name from sensors array
             const sensor = sensors.find(s => s.address === address);
             const name = sensor ? escapeHtml(sensor.name || 'Sensor') : 'Sensor';
-            html += `<option value="${address}">${name}</option>`;
+            html += `<option value="${address}"${address === currentValue ? ' selected' : ''}>${name}</option>`;
         }
     });
     
     select.innerHTML = html;
-    select.value = currentValue;
+    
+    // Verify selection is still valid, otherwise reset to "All Sensors"
+    if (currentValue && !addresses.includes(currentValue)) {
+        chartSelectedSensor = '';
+        select.value = '';
+    }
 }
 
 function drawChart() {
