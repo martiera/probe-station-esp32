@@ -775,6 +775,7 @@ function updateSensorList() {
                     ${sensor.alertEnabled ? '' : '| Alerts disabled'}
                 </div>
             </div>
+            <button class="btn btn-success" style="margin-right: 8px;" onclick="calibrateSensor(${index})">Calibrate</button>
             <button class="btn btn-secondary" onclick="editSensor(${index})">Edit</button>
         </div>
     `).join('');
@@ -993,6 +994,29 @@ async function calibrateAll() {
     try {
         await apiPost('calibrate', { referenceTemp: refTemp });
         showToast('All sensors calibrated', 'success');
+    } catch (error) {
+        showToast('Error during calibration', 'error');
+    }
+}
+
+async function calibrateSensor(index) {
+    const sensor = sensors[index];
+    if (!sensor) return;
+    
+    const refTemp = prompt(`Calibrate "${sensor.name || 'Sensor ' + (index + 1)}"\n\nEnter the current reference temperature (°C):`);
+    
+    if (refTemp === null) return; // User cancelled
+    
+    const refTempNum = parseFloat(refTemp);
+    if (isNaN(refTempNum)) {
+        showToast('Invalid temperature', 'warning');
+        return;
+    }
+    
+    try {
+        await apiPost(`sensors/${index}/calibrate`, { referenceTemp: refTempNum });
+        showToast(`${sensor.name || 'Sensor'} calibrated`, 'success');
+        setTimeout(() => loadSensors(), 500); // Reload to show new offset
     } catch (error) {
         showToast('Error during calibration', 'error');
     }

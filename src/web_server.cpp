@@ -154,6 +154,18 @@ void WebServer::setupRoutes() {
     );
     _server.addHandler(sensorUpdateHandler);
     
+    // Calibrate single sensor
+    _server.on("^\\/api\\/sensors\\/(\\d+)\\/calibrate$", HTTP_POST, 
+        [](AsyncWebServerRequest* request) {},
+        nullptr,
+        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            if (index == 0) {
+                uint8_t idx = request->pathArg(0).toInt();
+                handleCalibrateSensor(request, idx, data, len);
+            }
+        }
+    );
+    
     // ========== Configuration ==========
     _server.on("/api/config/wifi", HTTP_GET, [this](AsyncWebServerRequest* request) {
         handleGetWiFiConfig(request);
