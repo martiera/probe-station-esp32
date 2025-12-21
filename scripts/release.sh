@@ -1,12 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 vX.Y.Z" >&2
-  exit 2
-fi
+# Function to increment version
+increment_version() {
+    local version="$1"
+    # Remove 'v' prefix
+    version="${version#v}"
+    
+    # Split into parts
+    local major minor patch
+    IFS='.' read -r major minor patch <<< "$version"
+    
+    # Increment patch version
+    patch=$((patch + 1))
+    
+    echo "v${major}.${minor}.${patch}"
+}
 
-tag="$1"
+# Get tag from argument or auto-increment from last tag
+if [[ $# -eq 0 ]]; then
+    # Get latest tag from git
+    last_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+    
+    if [[ -z "$last_tag" ]]; then
+        echo "No existing tags found. Please provide initial version: $0 v1.0.0" >&2
+        exit 2
+    fi
+    
+    tag=$(increment_version "$last_tag")
+    echo "Auto-incrementing from $last_tag to $tag"
+elif [[ $# -eq 1 ]]; then
+    tag="$1"
+else
+    echo "Usage: $0 [vX.Y.Z]" >&2
+    echo "  If no version provided, auto-increments patch from last tag" >&2
+    exit 2
+fi
 
 if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "Tag must look like vX.Y.Z (example: v1.2.3)" >&2
