@@ -445,6 +445,7 @@ void WebServer::handleUpdateSensor(AsyncWebServerRequest* request, uint8_t senso
     // Update fields
     if (doc["name"].is<JsonVariant>()) {
         strncpy(config->name, doc["name"] | "", SENSOR_NAME_MAX_LEN - 1);
+        config->name[SENSOR_NAME_MAX_LEN - 1] = '\0';
     }
     if (doc["thresholdLow"].is<JsonVariant>()) {
         config->thresholdLow = doc["thresholdLow"];
@@ -463,6 +464,13 @@ void WebServer::handleUpdateSensor(AsyncWebServerRequest* request, uint8_t senso
     if (!configManager.save()) {
         sendError(request, 500, "Failed to save configuration");
         return;
+    }
+    
+    // Republish Home Assistant discovery if MQTT is enabled and connected
+    // This updates the sensor name in Home Assistant immediately
+    if (mqttClient.isEnabled() && mqttClient.isConnected()) {
+        mqttClient.publishHADiscovery();
+        Serial.printf("[WebServer] Republished HA discovery for sensor %d after config update\n", sensorIndex);
     }
     
     sendSuccess(request, "Sensor updated");
@@ -499,24 +507,30 @@ void WebServer::handleUpdateWiFiConfig(AsyncWebServerRequest* request,
     
     if (doc["ssid"].is<JsonVariant>()) {
         strncpy(config.ssid, doc["ssid"] | "", 32);
+        config.ssid[32] = '\0';
     }
     if (doc["password"].is<JsonVariant>() && strlen(doc["password"] | "") > 0) {
         strncpy(config.password, doc["password"] | "", 64);
+        config.password[64] = '\0';
     }
     if (doc["dhcp"].is<JsonVariant>()) {
         config.dhcp = doc["dhcp"];
     }
     if (doc["staticIP"].is<JsonVariant>()) {
         strncpy(config.staticIP, doc["staticIP"] | "", 15);
+        config.staticIP[15] = '\0';
     }
     if (doc["gateway"].is<JsonVariant>()) {
         strncpy(config.gateway, doc["gateway"] | "", 15);
+        config.gateway[15] = '\0';
     }
     if (doc["subnet"].is<JsonVariant>()) {
         strncpy(config.subnet, doc["subnet"] | "", 15);
+        config.subnet[15] = '\0';
     }
     if (doc["dns"].is<JsonVariant>()) {
         strncpy(config.dns, doc["dns"] | "", 15);
+        config.dns[15] = '\0';
     }
     
     if (!configManager.save()) {
@@ -564,18 +578,22 @@ void WebServer::handleUpdateMQTTConfig(AsyncWebServerRequest* request,
     
     if (doc["server"].is<JsonVariant>()) {
         strncpy(config.server, doc["server"] | "", 64);
+        config.server[64] = '\0';
     }
     if (doc["port"].is<JsonVariant>()) {
         config.port = doc["port"];
     }
     if (doc["username"].is<JsonVariant>()) {
         strncpy(config.username, doc["username"] | "", 32);
+        config.username[32] = '\0';
     }
     if (doc["password"].is<JsonVariant>() && strlen(doc["password"] | "") > 0) {
         strncpy(config.password, doc["password"] | "", 64);
+        config.password[64] = '\0';
     }
     if (doc["topicPrefix"].is<JsonVariant>()) {
         strncpy(config.topicPrefix, doc["topicPrefix"] | "", 64);
+        config.topicPrefix[64] = '\0';
     }
     if (doc["enabled"].is<JsonVariant>()) {
         config.enabled = doc["enabled"];
@@ -632,6 +650,7 @@ void WebServer::handleUpdateSystemConfig(AsyncWebServerRequest* request,
     
     if (doc["deviceName"].is<JsonVariant>()) {
         strncpy(config.deviceName, doc["deviceName"] | "", 32);
+        config.deviceName[32] = '\0';
     }
     if (doc["readInterval"].is<JsonVariant>()) {
         config.readInterval = doc["readInterval"];

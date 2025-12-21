@@ -304,6 +304,7 @@ bool ConfigManager::fromJson(const JsonDocument& doc) {
         
         if (sys["deviceName"].is<const char*>()) {
             strncpy(_systemConfig.deviceName, sys["deviceName"] | "TempMonitor", 32);
+            _systemConfig.deviceName[32] = '\0';
         }
         _systemConfig.readInterval = sys["readInterval"] | 5;
         _systemConfig.celsiusUnits = sys["celsiusUnits"] | true;
@@ -316,12 +317,18 @@ bool ConfigManager::fromJson(const JsonDocument& doc) {
         JsonObjectConst wifi = doc["wifi"];
         
         strncpy(_wifiConfig.ssid, wifi["ssid"] | "", 32);
+        _wifiConfig.ssid[32] = '\0';
         strncpy(_wifiConfig.password, wifi["password"] | "", 64);
+        _wifiConfig.password[64] = '\0';
         _wifiConfig.dhcp = wifi["dhcp"] | true;
         strncpy(_wifiConfig.staticIP, wifi["staticIP"] | "192.168.1.100", 15);
+        _wifiConfig.staticIP[15] = '\0';
         strncpy(_wifiConfig.gateway, wifi["gateway"] | "192.168.1.1", 15);
+        _wifiConfig.gateway[15] = '\0';
         strncpy(_wifiConfig.subnet, wifi["subnet"] | "255.255.255.0", 15);
+        _wifiConfig.subnet[15] = '\0';
         strncpy(_wifiConfig.dns, wifi["dns"] | "8.8.8.8", 15);
+        _wifiConfig.dns[15] = '\0';
     }
     
     // MQTT configuration
@@ -329,10 +336,14 @@ bool ConfigManager::fromJson(const JsonDocument& doc) {
         JsonObjectConst mqtt = doc["mqtt"];
         
         strncpy(_mqttConfig.server, mqtt["server"] | "", 64);
+        _mqttConfig.server[64] = '\0';
         _mqttConfig.port = mqtt["port"] | MQTT_DEFAULT_PORT;
         strncpy(_mqttConfig.username, mqtt["username"] | "", 32);
+        _mqttConfig.username[32] = '\0';
         strncpy(_mqttConfig.password, mqtt["password"] | "", 64);
+        _mqttConfig.password[64] = '\0';
         strncpy(_mqttConfig.topicPrefix, mqtt["topicPrefix"] | MQTT_TOPIC_BASE, 64);
+        _mqttConfig.topicPrefix[64] = '\0';
         _mqttConfig.enabled = mqtt["enabled"] | false;
         _mqttConfig.publishOnChange = mqtt["publishOnChange"] | true;
         _mqttConfig.publishThreshold = mqtt["publishThreshold"] | 0.2f;

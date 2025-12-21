@@ -181,7 +181,9 @@ bool WiFiManager::connect(const char* ssid, const char* password, bool save) {
     if (save) {
         WiFiConfig& config = configManager.getWiFiConfig();
         strncpy(config.ssid, ssid, 32);
+        config.ssid[32] = '\0';
         strncpy(config.password, password ? password : "", 64);
+        config.password[64] = '\0';
         configManager.markDirty();
         configManager.save();
     }

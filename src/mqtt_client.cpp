@@ -556,6 +556,13 @@ void MQTTClient::publishHADiscoverySensor(uint8_t sensorIndex) {
         Serial.printf("[MQTT] WARNING: Discovery payload truncated! (%d bytes)\n", len);
     }
     
-    _client.publish(discoveryTopic, payload, true);
-    Serial.printf("[MQTT] Published HA discovery for sensor %d\n", sensorIndex);
+    Serial.printf("[MQTT] Discovery topic: %s\n", discoveryTopic);
+    Serial.printf("[MQTT] Discovery payload (%d bytes): %s\n", len, payload);
+    
+    bool published = _client.publish(discoveryTopic, payload, true);
+    if (published) {
+        Serial.printf("[MQTT] Published HA discovery for sensor %d\n", sensorIndex);
+    } else {
+        Serial.printf("[MQTT] FAILED to publish HA discovery for sensor %d\n", sensorIndex);
+    }
 }

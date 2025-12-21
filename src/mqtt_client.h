@@ -114,6 +114,12 @@ public:
     void publishHADiscovery();
     
     /**
+     * Force republish of HA discovery on next update
+     * Useful when sensor names are changed
+     */
+    void requestDiscoveryRepublish() { _haDiscoveryPublished = false; }
+    
+    /**
      * Get last error message
      */
     const char* getLastError() const { return _lastError; }

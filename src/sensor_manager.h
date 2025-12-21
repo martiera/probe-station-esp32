@@ -97,6 +97,15 @@ typedef void (*ConnectionCallback)(uint8_t sensorIndex, bool connected);
 // SensorManager Class
 // ============================================================================
 
+/**
+ * Temperature reading state for non-blocking operation
+ */
+enum class SensorReadState : uint8_t {
+    IDLE,                   // Ready to start new reading
+    CONVERSION_REQUESTED,   // Conversion in progress, waiting for completion
+    READY_TO_READ          // Conversion complete, ready to read values
+};
+
 class SensorManager {
 public:
     /**
@@ -263,6 +272,10 @@ private:
     uint32_t _lastReadTime;
     uint32_t _lastDiscoveryTime;
     bool _rescanRequested;
+    
+    // Non-blocking temperature reading state
+    SensorReadState _readState;
+    uint32_t _conversionStartTime;
     
     AlarmCallback _alarmCallback;
     ConnectionCallback _connectionCallback;

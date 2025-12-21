@@ -35,7 +35,9 @@ SensorManager::SensorManager() :
     _rescanRequested(false),
     _alarmCallback(nullptr),
     _connectionCallback(nullptr),
-    _dataChanged(false) {
+    _dataChanged(false),
+    _readState(SensorReadState::IDLE),
+    _conversionStartTime(0) {
 }
 
 // ============================================================================
@@ -139,13 +141,30 @@ void SensorManager::readTemperatures() {
         return;
     }
     
-    // Request temperature conversion from all sensors
-    _sensors.requestTemperatures();
-    
-    // Wait for conversion (non-blocking would require state machine)
-    // At 12-bit resolution, conversion takes ~750ms
-    // For simplicity, we do a blocking wait here
-    delay(750);
+    // Non-blocking temperature reading using state machine
+    switch (_readState) {
+        case SensorReadState::IDLE:
+            // Start temperature conversion
+            _sensors.requestTemperatures();
+            _conversionStartTime = millis();
+            _readState = SensorReadState::CONVERSION_REQUESTED;
+            // Exit and let conversion happen in background
+            return;
+            
+        case SensorReadState::CONVERSION_REQUESTED:
+            // Check if conversion time has elapsed (750ms for 12-bit resolution)
+            if (millis() - _conversionStartTime < 750) {
+                // Still converting, exit and check again next update
+                return;
+            }
+            // Conversion complete, ready to read
+            _readState = SensorReadState::READY_TO_READ;
+            // Fall through to read values
+            
+        case SensorReadState::READY_TO_READ:
+            // Conversion complete, now read the values
+            break;
+    }
     
     // Read temperatures from all discovered sensors
     for (uint8_t i = 0; i < _sensorCount; i++) {
@@ -205,6 +224,9 @@ void SensorManager::readTemperatures() {
     
     // Mark data as changed
     _dataChanged = true;
+    
+    // Reset state machine for next reading cycle
+    _readState = SensorReadState::IDLE;
 }
 
 void SensorManager::update() {
@@ -215,9 +237,16 @@ void SensorManager::update() {
         discoverSensors();
     }
     
-    // Periodic temperature reading
+    // Non-blocking temperature reading state machine
     uint32_t readInterval = configManager.getSystemConfig().readInterval * 1000;
-    if (now - _lastReadTime >= readInterval) {
+    
+    if (_readState == SensorReadState::IDLE) {
+        // Start new reading cycle if interval has elapsed
+        if (now - _lastReadTime >= readInterval) {
+            readTemperatures();
+        }
+    } else {
+        // Continue existing reading cycle (checking conversion status)
         readTemperatures();
     }
 }
