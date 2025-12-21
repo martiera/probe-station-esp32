@@ -397,9 +397,18 @@ void WebServer::handleGetSensors(AsyncWebServerRequest* request) {
         buildSensorJson(obj, i);
     }
     
-    char buffer[1024];
-    serializeJson(doc, buffer, sizeof(buffer));
+    // Use heap allocation for large response (10 sensors × ~280 bytes = ~2800 bytes)
+    size_t bufferSize = 512 + (sensorManager.getSensorCount() * 300);  // Dynamic sizing
+    char* buffer = (char*)malloc(bufferSize);
+    if (!buffer) {
+        sendError(request, 500, "Out of memory");
+        return;
+    }
+    
+    size_t len = serializeJson(doc, buffer, bufferSize - 1);
+    buffer[len] = '\0';
     sendJson(request, 200, buffer);
+    free(buffer);
 }
 
 void WebServer::handleGetSensor(AsyncWebServerRequest* request, uint8_t sensorIndex) {
