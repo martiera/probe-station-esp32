@@ -1712,7 +1712,7 @@ function drawChart() {
             const row = Math.floor(i / itemsPerRow);
             const col = i % itemsPerRow;
             const x = padding.left + col * legendItemWidth;
-            const y = height - padding.bottom + 20 + row * 20;
+            const y = height - padding.bottom + 35 + row * 20;
             
             const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
             rect.setAttribute('x', x);
@@ -1880,6 +1880,9 @@ function formatTemp(temp) {
 
 function formatOffset(offset) {
     if (offset === null || offset === undefined) {
+        return '0.00°C';
+    }
+    if (offset === 0 || Math.abs(offset) < 0.005) {
         return '0.00°C';
     }
     const sign = offset >= 0 ? '+' : '';
