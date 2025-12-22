@@ -1047,7 +1047,18 @@ async function resetSensorCalibration(index) {
     }
     
     try {
-        await apiPost(`sensors/${index}/calibrate`, { referenceTemp: sensor.rawTemperature });
+        // Find backend index by address (may differ from frontend after drag-and-drop)
+        const response = await fetch('/api/sensors');
+        const backendSensors = await response.json();
+        const backendIndex = backendSensors.findIndex(s => s.address === sensor.address);
+        
+        if (backendIndex === -1) {
+            showToast('Sensor not found', 'error');
+            return;
+        }
+        
+        const backendSensor = backendSensors[backendIndex];
+        await apiPost(`sensors/${backendIndex}/calibrate`, { referenceTemp: backendSensor.rawTemperature });
         showToast('Calibration reset', 'success');
         setTimeout(() => loadSensors(), 500);
     } catch (error) {
@@ -1722,7 +1733,7 @@ function drawChart() {
         });
     }
     
-    // Time labels
+    // Time labels - positioned below chart, above legend
     const now = new Date();
     const labelCount = 4;
     for (let i = 0; i <= labelCount; i++) {
@@ -1733,7 +1744,7 @@ function drawChart() {
         
         const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
         label.setAttribute('x', x);
-        label.setAttribute('y', height - 8);
+        label.setAttribute('y', padding.top + chartHeight + 18);
         label.setAttribute('text-anchor', 'middle');
         label.setAttribute('fill', '#64748b');
         label.setAttribute('font-size', '12');

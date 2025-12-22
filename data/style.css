@@ -453,7 +453,7 @@ body {
 }
 
 .summary-card {
-    display: flex;
+    display: flex !important;
     align-items: center;
     gap: var(--space-md);
     padding: var(--space-lg);
