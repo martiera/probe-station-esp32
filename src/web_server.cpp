@@ -762,6 +762,11 @@ void WebServer::handleCalibrate(AsyncWebServerRequest* request, uint8_t* data, s
     float refTemp = doc["referenceTemp"];
     sensorManager.calibrateAll(refTemp);
     
+    if (!configManager.save()) {
+        sendError(request, 500, "Failed to save configuration");
+        return;
+    }
+    
     sendSuccess(request, "All sensors calibrated");
 }
 
@@ -776,6 +781,11 @@ void WebServer::handleCalibrateNew(AsyncWebServerRequest* request, uint8_t* data
     
     float refTemp = doc["referenceTemp"];
     uint8_t count = sensorManager.calibrateUncalibrated(refTemp);
+    
+    if (!configManager.save()) {
+        sendError(request, 500, "Failed to save configuration");
+        return;
+    }
     
     char message[64];
     snprintf(message, sizeof(message), "Calibrated %d new sensor(s)", count);

@@ -771,11 +771,13 @@ function updateSensorList() {
             <div class="sensor-list-info">
                 <div class="sensor-list-name">${escapeHtml(sensor.name || `Sensor ${index + 1}`)}</div>
                 <div class="sensor-list-details">
+                    <strong>${formatTemp(sensor.temperature)}</strong> | Offset: ${formatOffset(sensor.calibrationOffset)}<br>
                     ${sensor.address} | Thresholds: ${sensor.thresholdLow}°C - ${sensor.thresholdHigh}°C
                     ${sensor.alertEnabled ? '' : '| Alerts disabled'}
                 </div>
             </div>
             <button class="btn btn-success" style="margin-right: 8px;" onclick="calibrateSensor(${index})">Calibrate</button>
+            <button class="btn btn-warning" style="margin-right: 8px;" onclick="resetSensorCalibration(${index})">Reset</button>
             <button class="btn btn-secondary" onclick="editSensor(${index})">Edit</button>
         </div>
     `).join('');
@@ -1003,7 +1005,7 @@ async function calibrateSensor(index) {
     const sensor = sensors[index];
     if (!sensor) return;
     
-    const refTemp = prompt(`Calibrate "${sensor.name || 'Sensor ' + (index + 1)}"\n\nEnter the current reference temperature (°C):`);
+    const refTemp = prompt(`Calibrate "${sensor.name || 'Sensor ' + (index + 1)}"\n\nCurrent: ${formatTemp(sensor.temperature)}\nOffset: ${formatOffset(sensor.calibrationOffset)}\n\nEnter the reference temperature (°C):`);
     
     if (refTemp === null) return; // User cancelled
     
@@ -1019,6 +1021,23 @@ async function calibrateSensor(index) {
         setTimeout(() => loadSensors(), 500); // Reload to show new offset
     } catch (error) {
         showToast('Error during calibration', 'error');
+    }
+}
+
+async function resetSensorCalibration(index) {
+    const sensor = sensors[index];
+    if (!sensor) return;
+    
+    if (!confirm(`Reset calibration for "${sensor.name || 'Sensor ' + (index + 1)}"?`)) {
+        return;
+    }
+    
+    try {
+        await apiPost(`sensors/${index}/calibrate`, { referenceTemp: sensor.rawTemperature });
+        showToast('Calibration reset', 'success');
+        setTimeout(() => loadSensors(), 500);
+    } catch (error) {
+        showToast('Error resetting calibration', 'error');
     }
 }
 

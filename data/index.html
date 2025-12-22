@@ -40,7 +40,6 @@
         <nav class="tabs">
             <button class="tab active" data-tab="dashboard">📊 Dashboard</button>
             <button class="tab" data-tab="sensors">🌡️ Sensors</button>
-            <button class="tab" data-tab="calibration">⚖️ Calibration</button>
             <button class="tab" data-tab="settings">⚙️ Settings</button>
         </nav>
 
@@ -144,42 +143,6 @@
                 <div class="sensor-list" id="sensorList">
                     <!-- Will be populated by JavaScript -->
                     <div class="loading">No sensors found</div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Calibration Tab -->
-        <section class="tab-content" id="tab-calibration">
-            <div class="section">
-                <h2>Sensor Calibration</h2>
-                <p class="section-description">
-                    To calibrate sensors, place all sensors in a known temperature environment 
-                    (e.g., ice water bath at 0°C or room temperature with a reference thermometer).
-                    Enter the reference temperature and click calibrate.
-                </p>
-                
-                <div class="calibration-form">
-                    <div class="form-group">
-                        <label for="refTemp">Reference Temperature (°C)</label>
-                        <input type="number" id="refTemp" step="0.1" placeholder="Enter reference temperature">
-                    </div>
-                    <div class="button-group">
-                        <button class="btn btn-primary" onclick="calibrateAll()">Calibrate All Sensors</button>
-                        <button class="btn btn-success" onclick="calibrateNew()">Calibrate New Only</button>
-                        <button class="btn btn-secondary" onclick="resetCalibration()">Reset Calibration</button>
-                    </div>
-                    <p class="help-text" style="margin-top: 10px; font-size: 0.85em; color: #666;">
-                        <strong>Calibrate All:</strong> Calibrates every connected sensor.<br>
-                        <strong>Calibrate New Only:</strong> Only calibrates sensors with default names and no previous calibration.
-                    </p>
-                </div>
-
-                <div class="calibration-status">
-                    <h3>Current Calibration Offsets</h3>
-                    <div class="offset-list" id="offsetList">
-                        <!-- Will be populated by JavaScript -->
-                        <div class="loading">No sensors found</div>
-                    </div>
                 </div>
             </div>
         </section>
@@ -397,10 +360,6 @@
         <button class="tab" data-tab="sensors">
             <span class="tab-icon">🌡️</span>
             <span>Sensors</span>
-        </button>
-        <button class="tab" data-tab="calibration">
-            <span class="tab-icon">⚖️</span>
-            <span>Calibrate</span>
         </button>
         <button class="tab" data-tab="settings">
             <span class="tab-icon">⚙️</span>
