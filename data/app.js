@@ -776,9 +776,11 @@ function updateSensorList() {
                     ${sensor.alertEnabled ? '' : '| Alerts disabled'}
                 </div>
             </div>
-            <button class="btn btn-success" style="margin-right: 8px;" onclick="calibrateSensor(${index})">Calibrate</button>
-            <button class="btn btn-warning" style="margin-right: 8px;" onclick="resetSensorCalibration(${index})">Reset</button>
-            <button class="btn btn-secondary" onclick="editSensor(${index})">Edit</button>
+            <div class="sensor-list-actions">
+                <button class="btn btn-success" onclick="calibrateSensor(${index})">Calibrate</button>
+                <button class="btn btn-warning" onclick="resetSensorCalibration(${index})">Reset</button>
+                <button class="btn btn-secondary" onclick="editSensor(${index})">Edit</button>
+            </div>
         </div>
     `).join('');
     
@@ -1527,7 +1529,7 @@ function drawChart() {
     const isMobile = window.innerWidth < 768;
     const width = isMobile ? 400 : 800;
     const height = isMobile ? 400 : 300;
-    const padding = { top: 20, right: isMobile ? 60 : 80, bottom: 30, left: 50 };
+    const padding = { top: 20, right: 20, bottom: 60, left: 50 };
     const chartWidth = width - padding.left - padding.right;
     const chartHeight = height - padding.top - padding.bottom;
     
@@ -1691,13 +1693,19 @@ function drawChart() {
         svg.appendChild(path);
     });
     
-    // Legend
+    // Legend - positioned at bottom
     if (!chartSelectedSensor && dataToPlot.length > 1) {
+        const legendItemWidth = 150;
+        const itemsPerRow = Math.floor((width - padding.left - padding.right) / legendItemWidth);
+        
         dataToPlot.forEach(({ sensor, color }, i) => {
-            const y = padding.top + i * 20;
+            const row = Math.floor(i / itemsPerRow);
+            const col = i % itemsPerRow;
+            const x = padding.left + col * legendItemWidth;
+            const y = height - padding.bottom + 20 + row * 20;
             
             const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-            rect.setAttribute('x', width - padding.right + 10);
+            rect.setAttribute('x', x);
             rect.setAttribute('y', y - 8);
             rect.setAttribute('width', 12);
             rect.setAttribute('height', 12);
@@ -1705,7 +1713,7 @@ function drawChart() {
             svg.appendChild(rect);
             
             const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-            label.setAttribute('x', width - padding.right + 26);
+            label.setAttribute('x', x + 16);
             label.setAttribute('y', y + 3);
             label.setAttribute('fill', '#cbd5e1');
             label.setAttribute('font-size', '11');
