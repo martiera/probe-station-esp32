@@ -1704,7 +1704,7 @@ function drawChart() {
     });
     
     // Legend - positioned at bottom
-    if (!chartSelectedSensor && dataToPlot.length > 1) {
+    if (!chartSelectedSensor && dataToPlot.length > 0) {
         const legendItemWidth = 150;
         const itemsPerRow = Math.floor((width - padding.left - padding.right) / legendItemWidth);
         
