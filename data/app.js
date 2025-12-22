@@ -939,7 +939,7 @@ function editSensor(index) {
     const sensor = sensors[index];
     if (!sensor) return;
     
-    document.getElementById('editSensorIndex').value = index;
+    document.getElementById('editSensorAddress').value = sensor.address;
     document.getElementById('editSensorName').value = sensor.name || '';
     document.getElementById('editThresholdLow').value = sensor.thresholdLow;
     document.getElementById('editThresholdHigh').value = sensor.thresholdHigh;
@@ -953,17 +953,29 @@ function closeModal() {
 }
 
 async function saveSensor() {
-    const index = parseInt(document.getElementById('editSensorIndex').value);
+    const address = document.getElementById('editSensorAddress').value;
     
-    const data = {
-        index: index,
-        name: document.getElementById('editSensorName').value,
-        thresholdLow: parseFloat(document.getElementById('editThresholdLow').value),
-        thresholdHigh: parseFloat(document.getElementById('editThresholdHigh').value),
-        alertEnabled: document.getElementById('editAlertEnabled').checked
-    };
-    
+    // Find current backend index by address
+    // Backend sensor order may differ from frontend after drag-and-drop
+    let response;
     try {
+        response = await fetch('/api/sensors');
+        const backendSensors = await response.json();
+        const backendIndex = backendSensors.findIndex(s => s.address === address);
+        
+        if (backendIndex === -1) {
+            showToast('Sensor not found', 'error');
+            return;
+        }
+        
+        const data = {
+            index: backendIndex,
+            name: document.getElementById('editSensorName').value,
+            thresholdLow: parseFloat(document.getElementById('editThresholdLow').value),
+            thresholdHigh: parseFloat(document.getElementById('editThresholdHigh').value),
+            alertEnabled: document.getElementById('editAlertEnabled').checked
+        };
+        
         await apiPost('sensors/update', data);
         showToast('Sensor updated successfully', 'success');
         closeModal();
