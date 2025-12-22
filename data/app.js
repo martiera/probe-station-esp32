@@ -725,7 +725,6 @@ async function loadConfigurations() {
 function updateSensorDisplay() {
     updateSensorGrid();
     updateSensorList();
-    updateCalibrationList();
 }
 
 function updateSensorGrid() {
