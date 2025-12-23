@@ -722,6 +722,41 @@ body {
     transition: var(--transition);
 }
 
+.sensor-reorder-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-right: var(--space-sm);
+}
+
+.btn-reorder {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    width: 28px;
+    height: 24px;
+    padding: 0;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
+    transition: var(--transition);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-reorder:hover:not(:disabled) {
+    background: var(--primary);
+    color: white;
+    border-color: var(--primary);
+}
+
+.btn-reorder:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
 .sensor-list-item:hover {
     background: var(--bg-hover);
 }
@@ -1209,6 +1244,19 @@ body {
     
     .drag-handle {
         display: none; /* Hide drag handle on mobile */
+    }
+    
+    .sensor-reorder-buttons {
+        flex-direction: row;
+        order: -1; /* Move to top */
+        justify-content: center;
+        gap: var(--space-sm);
+    }
+    
+    .btn-reorder {
+        width: 40px;
+        height: 32px;
+        font-size: 14px;
     }
     
     .sensor-list-actions {

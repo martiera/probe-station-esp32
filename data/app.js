@@ -766,6 +766,10 @@ function updateSensorList() {
     
     list.innerHTML = sensors.map((sensor, index) => `
         <div class="sensor-list-item" draggable="true" data-address="${sensor.address}">
+            <div class="sensor-reorder-buttons">
+                <button class="btn-reorder" onclick="moveSensorUp(${index})" ${index === 0 ? 'disabled' : ''} title="Move up">▲</button>
+                <button class="btn-reorder" onclick="moveSensorDown(${index})" ${index === sensors.length - 1 ? 'disabled' : ''} title="Move down">▼</button>
+            </div>
             <div class="drag-handle" title="Drag to reorder">⋮⋮</div>
             <div class="sensor-list-info">
                 <div class="sensor-list-name">${escapeHtml(sensor.name || `Sensor ${index + 1}`)}</div>
@@ -1029,7 +1033,17 @@ async function calibrateSensor(index) {
     }
     
     try {
-        await apiPost(`sensors/${index}/calibrate`, { referenceTemp: refTempNum });
+        // Find backend index by address (may differ from frontend after drag-and-drop)
+        const response = await fetch('/api/sensors');
+        const backendSensors = await response.json();
+        const backendIndex = backendSensors.findIndex(s => s.address === sensor.address);
+        
+        if (backendIndex === -1) {
+            showToast('Sensor not found', 'error');
+            return;
+        }
+        
+        await apiPost(`sensors/${backendIndex}/calibrate`, { referenceTemp: refTempNum });
         showToast(`${sensor.name || 'Sensor'} calibrated`, 'success');
         setTimeout(() => loadSensors(), 500); // Reload to show new offset
     } catch (error) {
@@ -1770,6 +1784,24 @@ function loadSensorOrder() {
 function saveSensorOrder() {
     sensorOrder = sensors.map(s => s.address);
     safeLocalStorageSet('sensorOrder', JSON.stringify(sensorOrder));
+}
+
+function moveSensorUp(index) {
+    if (index === 0) return;
+    const temp = sensors[index];
+    sensors[index] = sensors[index - 1];
+    sensors[index - 1] = temp;
+    saveSensorOrder();
+    updateSensorDisplay();
+}
+
+function moveSensorDown(index) {
+    if (index === sensors.length - 1) return;
+    const temp = sensors[index];
+    sensors[index] = sensors[index + 1];
+    sensors[index + 1] = temp;
+    saveSensorOrder();
+    updateSensorDisplay();
 }
 
 function applySensorOrder() {
