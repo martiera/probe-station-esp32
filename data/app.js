@@ -1022,18 +1022,43 @@ async function calibrateSensor(index) {
     const sensor = sensors[index];
     if (!sensor) return;
     
-    const refTemp = prompt(`Calibrate "${sensor.name || 'Sensor ' + (index + 1)}"\n\nCurrent: ${formatTemp(sensor.temperature)}\nOffset: ${formatOffset(sensor.calibrationOffset)}\n\nEnter the reference temperature (°C):`);
+    // Populate modal with current sensor data
+    document.getElementById('calibrateSensorIndex').value = index;
+    document.getElementById('calibrateSensorName').textContent = sensor.name || `Sensor ${index + 1}`;
+    document.getElementById('calibrateCurrentTemp').textContent = formatTemp(sensor.temperature);
+    document.getElementById('calibrateCurrentOffset').textContent = formatOffset(sensor.calibrationOffset);
+    document.getElementById('calibrateRefTemp').value = '';
+    document.getElementById('calibrateOffset').value = '';
     
-    if (refTemp === null) return; // User cancelled
+    // Show modal
+    document.getElementById('calibrationModal').classList.add('active');
+}
+
+function closeCalibrationModal() {
+    document.getElementById('calibrationModal').classList.remove('active');
+}
+
+async function applyCalibration() {
+    const index = parseInt(document.getElementById('calibrateSensorIndex').value);
+    const sensor = sensors[index];
+    if (!sensor) return;
     
-    const refTempNum = parseFloat(refTemp);
-    if (isNaN(refTempNum)) {
-        showToast('Invalid temperature', 'warning');
+    const refTemp = document.getElementById('calibrateRefTemp').value;
+    const offsetValue = document.getElementById('calibrateOffset').value;
+    
+    // Validate that one and only one method is used
+    if (refTemp && offsetValue) {
+        showToast('Please use either reference temperature OR offset, not both', 'warning');
+        return;
+    }
+    
+    if (!refTemp && !offsetValue) {
+        showToast('Please enter either reference temperature or offset', 'warning');
         return;
     }
     
     try {
-        // Find backend index by address (may differ from frontend after drag-and-drop)
+        // Find backend index by address
         const response = await fetch('/api/sensors');
         const backendSensors = await response.json();
         const backendIndex = backendSensors.findIndex(s => s.address === sensor.address);
@@ -1043,9 +1068,31 @@ async function calibrateSensor(index) {
             return;
         }
         
-        await apiPost(`sensors/${backendIndex}/calibrate`, { referenceTemp: refTempNum });
+        let referenceTemp;
+        
+        if (refTemp) {
+            // Method 1: Reference temperature
+            referenceTemp = parseFloat(refTemp);
+            if (isNaN(referenceTemp)) {
+                showToast('Invalid reference temperature', 'warning');
+                return;
+            }
+        } else {
+            // Method 2: Direct offset
+            const offset = parseFloat(offsetValue);
+            if (isNaN(offset)) {
+                showToast('Invalid offset value', 'warning');
+                return;
+            }
+            // Convert offset to reference temperature: reference = raw + offset
+            const backendSensor = backendSensors[backendIndex];
+            referenceTemp = backendSensor.rawTemperature + offset;
+        }
+        
+        await apiPost(`sensors/${backendIndex}/calibrate`, { referenceTemp });
         showToast(`${sensor.name || 'Sensor'} calibrated`, 'success');
-        setTimeout(() => loadSensors(), 500); // Reload to show new offset
+        closeCalibrationModal();
+        setTimeout(() => loadSensors(), 500);
     } catch (error) {
         showToast('Error during calibration', 'error');
     }

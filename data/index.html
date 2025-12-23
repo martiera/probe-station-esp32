@@ -337,6 +337,44 @@
         </div>
     </div>
 
+    <!-- Calibration Modal -->
+    <div class="modal" id="calibrationModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Calibrate Sensor</h3>
+                <button class="btn btn-icon" onclick="closeCalibrationModal()">✕</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="calibrateSensorIndex">
+                <div class="sensor-info-box">
+                    <div><strong id="calibrateSensorName">Sensor</strong></div>
+                    <div>Current: <strong id="calibrateCurrentTemp">--</strong></div>
+                    <div>Offset: <span id="calibrateCurrentOffset">0.00°C</span></div>
+                </div>
+                
+                <div class="form-group">
+                    <label for="calibrateRefTemp">Reference Temperature (°C)</label>
+                    <input type="number" id="calibrateRefTemp" step="0.1" placeholder="e.g., 0 for ice water">
+                    <div class="help-text">Place sensor in known environment and enter the reference temperature</div>
+                </div>
+
+                <div class="calibration-divider">
+                    <span>⚙️ Advanced</span>
+                </div>
+
+                <div class="form-group">
+                    <label for="calibrateOffset">Direct Offset Adjustment (°C)</label>
+                    <input type="number" id="calibrateOffset" step="0.1" placeholder="e.g., -2.5">
+                    <div class="help-text">Manually enter the offset to add to raw readings</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeCalibrationModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="applyCalibration()">Apply</button>
+            </div>
+        </div>
+    </div>
+
     <!-- OTA Update Modal Overlay -->
     <div class="ota-overlay" id="otaOverlay" style="display: none;">
         <div class="ota-modal">

@@ -1099,6 +1099,49 @@ body {
     margin-bottom: var(--space-lg);
 }
 
+/* Calibration Modal Specific Styles */
+.sensor-info-box {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: var(--space-md);
+    margin-bottom: var(--space-lg);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+}
+
+.calibration-divider {
+    text-align: center;
+    margin: var(--space-lg) 0;
+    position: relative;
+}
+
+.calibration-divider::before,
+.calibration-divider::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    width: 40%;
+    height: 1px;
+    background: var(--border-color);
+}
+
+.calibration-divider::before {
+    left: 0;
+}
+
+.calibration-divider::after {
+    right: 0;
+}
+
+.calibration-divider span {
+    background: var(--bg-secondary);
+    padding: 0 var(--space-md);
+    color: var(--text-muted);
+    font-size: 0.875rem;
+}
+
 .ota-progress-bar {
     height: 12px;
     background: var(--bg-input);
