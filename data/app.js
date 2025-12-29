@@ -81,6 +81,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     initTabs();
     initChart();
     
+    // Handle URL hash for direct navigation (e.g., from captive portal)
+    handleUrlHash();
+    
     // Initial data load - load config first to get pinned sensor before first sensor display
     await loadConfigurations();
     
@@ -529,6 +532,26 @@ function switchToTab(tabId) {
     
     if (tabButton) {
         tabButton.click();
+    }
+}
+
+function handleUrlHash() {
+    // Check URL hash for direct navigation (e.g., #settings from captive portal)
+    const hash = window.location.hash.substring(1); // Remove # prefix
+    if (hash === 'settings') {
+        // Switch to settings tab
+        switchToTab('settings');
+        
+        // Auto-expand WiFi configuration section after a brief delay
+        setTimeout(() => {
+            const wifiSection = document.querySelector('.section.collapsible');
+            if (wifiSection && !wifiSection.classList.contains('expanded')) {
+                const header = wifiSection.querySelector('.section-header');
+                if (header) {
+                    header.click(); // Trigger the collapse toggle
+                }
+            }
+        }, 300);
     }
 }
 

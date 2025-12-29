@@ -271,9 +271,13 @@ void setup() {
     Serial.println(F("[MAIN] Initializing web server..."));
     webServer.begin();
     
-    // Initialize OTA manager (checks for pending SPIFFS updates)
-    Serial.println(F("[MAIN] Initializing OTA manager..."));
-    otaManager.begin();
+    // Initialize OTA manager only if not in AP mode (requires internet connection)
+    if (!wifiManager.isAPMode()) {
+        Serial.println(F("[MAIN] Initializing OTA manager..."));
+        otaManager.begin();
+    } else {
+        Serial.println(F("[MAIN] Skipping OTA manager (AP mode - no internet)"));
+    }
     
 #ifdef USE_DISPLAY
     // Set display manager references

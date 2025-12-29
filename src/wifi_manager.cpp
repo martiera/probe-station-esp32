@@ -226,14 +226,13 @@ void WiFiManager::startAP(bool keepStation) {
         WiFi.mode(WIFI_AP);
     }
     
-    // Configure AP
-    WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, false, AP_MAX_CONNECTIONS);
+    // Configure AP (open network - no password)
+    WiFi.softAP(AP_SSID, nullptr, AP_CHANNEL, false, AP_MAX_CONNECTIONS);
     
     _apActive = true;
     
     IPAddress apIP = WiFi.softAPIP();
-    Serial.printf("[WiFiManager] AP SSID: %s\n", AP_SSID);
-    Serial.printf("[WiFiManager] AP Password: %s\n", AP_PASSWORD);
+    Serial.printf("[WiFiManager] AP SSID: %s (open network)\n", AP_SSID);
     Serial.printf("[WiFiManager] AP IP: %s\n", apIP.toString().c_str());
     
     // Start DNS server for captive portal
