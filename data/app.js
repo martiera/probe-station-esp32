@@ -48,6 +48,7 @@ let otaPollTimer = null;
 let otaLastProgress = -1;
 let otaLastProgressTime = 0;
 const OTA_PROGRESS_TIMEOUT_MS = 60000; // 1 minute timeout if no progress
+let currentUpdateVersion = null; // Track the version available for updates
 
 // Parse version string (e.g., "v1.0.7" or "1.0.7") into comparable number
 function parseVersion(version) {
@@ -103,6 +104,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Start polling (chart history loaded in first loadSensors call)
     sensorPollTimer = setInterval(loadSensors, SENSOR_POLL_INTERVAL);
     setInterval(loadStatus, STATUS_UPDATE_INTERVAL);
+    // Note: Backend checks for updates every 24h automatically
+    // Frontend only needs to check on page load, tab switch, or manual refresh
 });
 
 // ============================================================================
@@ -111,6 +114,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 let otaCheckTimer = null;
 let otaUpdateAvailable = false;
+let previousOtaState = { current: null, updateAvailable: false, latest: null };
 
 async function loadOtaInfo(force = false) {
     try {
@@ -141,6 +145,36 @@ async function loadOtaInfo(force = false) {
             
             otaUpdateAvailable = info.updateAvailable;
             
+            // Detect state changes and update banner automatically
+            const latestTag = info.latest ? info.latest.tag : null;
+            const stateChanged = 
+                previousOtaState.current !== info.current ||
+                previousOtaState.updateAvailable !== info.updateAvailable ||
+                previousOtaState.latest !== latestTag;
+            
+            if (stateChanged) {
+                console.log('[OTA] State changed, updating banner...');
+                previousOtaState = {
+                    current: info.current,
+                    updateAvailable: info.updateAvailable,
+                    latest: latestTag
+                };
+                
+                // Update banner based on new state
+                if (info.updateAvailable && info.latest && info.latest.tag) {
+                    // New update available - show banner
+                    currentUpdateVersion = info.latest.tag;
+                    showUpdateBanner(info.latest.tag);
+                } else {
+                    // No update or update completed - hide banner
+                    const banner = document.getElementById('updateBanner');
+                    if (banner) {
+                        banner.style.display = 'none';
+                    }
+                    currentUpdateVersion = null;
+                }
+            }
+            
             if (info.error) {
                 document.getElementById('otaStatus').textContent = info.error;
                 btn.disabled = false;
@@ -165,11 +199,6 @@ async function loadOtaInfo(force = false) {
             }
         }
         
-        // If new update available, clear dismissed flag so banner shows
-        if (info.updateAvailable) {
-            safeLocalStorageRemove('updateBannerDismissed');
-            showUpdateBannerIfAvailable();
-        }
     } catch (e) {
         const msg = (e && e.message) ? e.message : 'Unable to check for updates';
         document.getElementById('otaStatus').textContent = msg;
@@ -461,29 +490,32 @@ function sensorManager_getAlarmCount() {
 
 function checkForUpdates() {
     // Check for updates in background (shown on dashboard)
-    loadOtaInfo().then(() => {
-        showUpdateBannerIfAvailable();
-    }).catch(err => {
+    // loadOtaInfo handles banner display via state change detection
+    loadOtaInfo().catch(err => {
         console.error('Failed to check for updates:', err);
     });
 }
 
 function showUpdateBannerIfAvailable() {
-    // Check if update is available from cached OTA info
-    apiGet('ota/info').then(info => {
-        if (info.updateAvailable && info.latest && info.latest.tag) {
-            showUpdateBanner(info.latest.tag);
-        }
-    }).catch(() => {
-        // Silently ignore errors
-    });
+    // Show banner based on cached state (if update is available and not dismissed)
+    if (otaUpdateAvailable && currentUpdateVersion) {
+        showUpdateBanner(currentUpdateVersion);
+    }
 }
 
 function showUpdateBanner(version) {
+    // Store the current update version globally
+    currentUpdateVersion = version;
+    
     // Check if this specific version was dismissed
     const dismissedVersion = safeLocalStorageGet('updateBannerDismissedVersion');
     if (dismissedVersion === version) {
         console.log('Banner dismissed for version:', version);
+        // Hide banner if it was showing
+        const banner = document.getElementById('updateBanner');
+        if (banner) {
+            banner.style.display = 'none';
+        }
         return;
     }
     
@@ -508,6 +540,8 @@ function dismissUpdateBanner() {
     safeLocalStorageSet('updateBannerDismissedVersion', version);
     // Clean up old key
     safeLocalStorageRemove('updateBannerDismissed');
+    // Clear current update version since user dismissed it
+    currentUpdateVersion = null;
 }
 
 function goToUpdatePage() {
@@ -585,6 +619,11 @@ function switchToTab(tabId) {
     // Load OTA info when switching to settings tab
     if (tabId === 'settings') {
         loadOtaInfo();
+    }
+    
+    // Re-check banner visibility when switching to dashboard
+    if (tabId === 'dashboard') {
+        showUpdateBannerIfAvailable();
     }
     
     // Fade out current content

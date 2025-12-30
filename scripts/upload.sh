@@ -73,10 +73,10 @@ echo ""
 echo "→ Cleaning build directories..."
 ~/.platformio/penv/bin/platformio run -t clean
 
-# Remove old build artifacts
-if [ -d ".pio/build/$ENV" ]; then
-    echo "→ Removing .pio/build/$ENV directory..."
-    rm -rf ".pio/build/$ENV"
+# Remove entire build directory for fresh compile (avoids compiler cache issues)
+if [ -d ".pio/build" ]; then
+    echo "→ Removing .pio/build directory..."
+    rm -rf ".pio/build"
 fi
 
 # Step 2: Optional flash erase (for fresh installs or fixing corruption)
