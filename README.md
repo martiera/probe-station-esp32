@@ -5,8 +5,10 @@
 1. **Power on the device** (connect USB or power supply)
 2. **Connect your phone or PC to the WiFi AP**:
    - SSID: `TempMonitor-XXXXXX` (no password)
-3. **Open a browser** (on the same device) and go to: [http://192.168.4.1](http://192.168.4.1)
-   - You will be automatically redirected to the WiFi settings page
+3. **Open a browser** (on the same device):
+   - Most devices will automatically pop up a captive portal page for WiFi setup
+   - **If it does not appear automatically, open [http://192.168.4.1](http://192.168.4.1) manually in your browser**
+   - You will be redirected to the WiFi settings page
 4. **Connect the device to your home/office WiFi**:
    - Enter your WiFi credentials and save
    - The device will reboot and join your network
