@@ -1,5 +1,23 @@
 # ESP32 Temperature Monitoring System
 
+## 🚦 Quick Start
+
+1. **Power on the device** (connect USB or power supply)
+2. **Connect your phone or PC to the WiFi AP**:
+   - SSID: `TempMonitor-XXXXXX` (no password)
+3. **Open a browser** (on the same device) and go to: [http://192.168.4.1](http://192.168.4.1)
+   - You will be automatically redirected to the WiFi settings page
+4. **Connect the device to your home/office WiFi**:
+   - Enter your WiFi credentials and save
+   - The device will reboot and join your network
+5. **Find the device's new IP address**:
+   - Check the TFT screen (STATUS page) for the current IP
+   - Or check your router's connected devices
+6. **Access the web dashboard**:
+   - Open a browser and go to the device's IP address (shown on the screen)
+
+**Tip:** You can always reset WiFi by holding the reset button or reflashing if needed.
+
 A professional-grade temperature monitoring solution for heating and hot water pipe monitoring using TTGO T-Display (ESP32 with TFT) and DS18B20 sensors.
 
 ## 🌟 Features
