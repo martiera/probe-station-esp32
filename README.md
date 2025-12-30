@@ -44,28 +44,44 @@ The 1.14" TFT display provides a clean, readable interface with 4 pages:
 - **MANUAL (FOCUS-M)**: Stays on selected sensor until you press BTN1
 
 ### Connectivity
-- **WiFi Manager**: Auto-connect to configured network or create Access Point for setup
+- **WiFi Manager**: Auto-connects to configured network or creates an **open Access Point (no password)** for setup
+- **Captive Portal**: Any device connecting to AP is automatically redirected to the WiFi settings page
 - **Async WiFi Scanning**: Non-blocking network scanning prevents device reboots
 - **MQTT Integration**: Publish temperatures and alarms to any MQTT broker
 - **Home Assistant Auto-Discovery**: Sensors automatically appear in Home Assistant
-- **OTA Updates**: Update firmware wirelessly
+- **OTA Updates**: Update firmware wirelessly (OTA manager is skipped in AP mode to save memory)
 
-### Alerting
-- **Configurable Thresholds**: Set high/low temperature limits per sensor
-- **Hysteresis**: Prevents rapid alarm toggling at threshold boundaries
-- **MQTT Alarms**: Instant notification when thresholds are exceeded
-- **Web Notifications**: Real-time alerts in the dashboard
+### Web Dashboard (Modern UI)
+- **Responsive, mobile-friendly interface**
+- **Update Banner**: Notifies when a new firmware version is available; auto-hides when up-to-date
+- **Tab Navigation**: Dashboard, Sensors, Settings (auto-expands WiFi config if redirected from captive portal)
+- **Real-time Data**: Live temperature, alarms, and status via WebSocket
+- **Sensor Management**: Name, calibrate, reorder, and set thresholds for each sensor
+- **WiFi Setup**: Scan and connect to WiFi, supports static IP
+- **MQTT Setup**: Enable/disable, set broker, topic, and credentials
+- **OTA**: One-click firmware update from web UI (when not in AP mode)
+- **Calibration**: Calibrate all or individual sensors from the web
+- **Alarm Notifications**: Banner and color-coded status for alarms
 
-### Calibration
-- **Calibrate All**: Calibrate every connected sensor at once
-- **Calibrate New Only**: Only calibrate sensors with default names (newly added)
-- **Per-sensor Adjustment**: Fine-tune individual sensor readings
-- **Persistent Storage**: Calibration data saved to flash memory
+### TFT Display Interface (TTGO T-Display)
+- **4 Pages**: FOCUS (auto/manual), SENSORS (list), STATUS, ALERTS
+- **Button Controls**:
+  - BTN1 (Top): Next sensor or action (short/long press for auto/manual)
+  - BTN2 (Bottom): Next page
+- **Status Bar**: Shows WiFi (STA/AP), page, and context action
+- **Footer**: Page indicator dots and navigation arrow
+- **Color Logic**:
+  - Green: Normal
+  - Red: High alarm
+  - Blue: Low alarm
+  - Orange: Sensor error
+- **FOCUS Page**: Auto-cycles sensors unless in manual mode
+- **ALERTS Page**: Shows all active alarms or "All Normal"
 
-### Configuration
-- **Sensor Naming**: Assign meaningful names to each sensor location
-- **Customizable Intervals**: Adjust reading and publish frequencies
-- **Static IP Support**: Optional fixed IP address configuration
+### WiFi/AP Setup (Updated)
+- On first boot or if WiFi fails, device creates an **open AP** (SSID: `TempMonitor-XXXXXX`, no password)
+- Captive portal auto-redirects to WiFi settings in the web dashboard
+- After WiFi is configured, device switches to STA mode and disables AP
 
 ## 📋 Hardware Requirements
 
@@ -153,23 +169,13 @@ GND ────────────┴──── All DS18B20 GND (Black)
 
 3. **Build and Upload Firmware**
    ```bash
-   # Build for TTGO T-Display
-   pio run -e ttgo-t-display
-   
-   # Upload to ESP32
-   pio run -e ttgo-t-display --target upload
+   # Build and upload (release environment is default)
+   ./scripts/upload.sh --erase --fs
    ```
 
-4. **Upload Web Interface**
-   ```bash
-   # Upload SPIFFS filesystem
-   pio run --target uploadfs
-   ```
-
-5. **Connect to Device**
-   - On first boot, ESP32 creates WiFi AP: `TempMonitor-Setup`
-   - Password: `tempmonitor123`
-   - Open browser: `http://192.168.4.1`
+4. **Connect to Device**
+   - On first boot, ESP32 creates open WiFi AP: `TempMonitor-XXXXXX` (no password)
+   - Open browser: `http://192.168.4.1` (auto-redirects to WiFi settings)
 
 ### Initial Configuration
 
