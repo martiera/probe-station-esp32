@@ -436,6 +436,18 @@ String OTAManager::getAvailableVersion() const {
     return String();
 }
 
+void OTAManager::setReleaseInfo(const String& tag, const String& firmwareUrl, const String& spiffsUrl) {
+    if (_releaseMutex && xSemaphoreTake(_releaseMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _release.tag = tag;
+        _release.name = "Manual: " + tag;
+        _release.firmwareUrl = firmwareUrl;
+        _release.spiffsUrl = spiffsUrl;
+        _release.fetchedAtMs = millis();
+        Serial.printf("[OTA] Release info set manually: %s\n", tag.c_str());
+        xSemaphoreGive(_releaseMutex);
+    }
+}
+
 void OTAManager::getReleaseInfoCopy(OTAReleaseInfo& out) const {
     if (_releaseMutex && xSemaphoreTake(_releaseMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         out = _release;

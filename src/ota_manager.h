@@ -83,6 +83,9 @@ public:
     
     // Trigger a check on boot (delayed to allow WiFi to connect)
     void checkOnBoot();
+    
+    // Manually set release info (for bypassing GitHub API check)
+    void setReleaseInfo(const String& tag, const String& firmwareUrl, const String& spiffsUrl);
 
 private:
     OTAReleaseInfo _release;

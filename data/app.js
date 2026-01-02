@@ -247,6 +247,134 @@ async function startOtaUpdate() {
     }
 }
 
+// ============================================================================
+// Direct File Upload
+// ============================================================================
+
+async function uploadFile(file, type) {
+    const progressDiv = document.getElementById('uploadProgress');
+    const progressFill = document.getElementById('uploadProgressFill');
+    const progressText = document.getElementById('uploadProgressText');
+    
+    progressDiv.style.display = 'flex';
+    progressFill.style.width = '0%';
+    progressText.textContent = '0%';
+    
+    const formData = new FormData();
+    formData.append('file', file, file.name);
+    
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/ota/upload');
+        
+        xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+                const pct = Math.round((e.loaded / e.total) * 100);
+                progressFill.style.width = pct + '%';
+                progressText.textContent = pct + '%';
+            }
+        };
+        
+        xhr.onload = () => {
+            if (xhr.status === 200) {
+                const resp = JSON.parse(xhr.responseText);
+                resolve(resp);
+            } else {
+                try {
+                    const resp = JSON.parse(xhr.responseText);
+                    reject(new Error(resp.error || 'Upload failed'));
+                } catch (_) {
+                    reject(new Error('Upload failed: ' + xhr.status));
+                }
+            }
+        };
+        
+        xhr.onerror = () => reject(new Error('Network error'));
+        xhr.send(formData);
+    });
+}
+
+async function uploadFirmware() {
+    const input = document.getElementById('firmwareFile');
+    if (!input.files.length) {
+        showToast('Please select a firmware file', 'warning');
+        return;
+    }
+    
+    const file = input.files[0];
+    if (!file.name.endsWith('.bin')) {
+        showToast('Please select a .bin file', 'warning');
+        return;
+    }
+    
+    try {
+        showToast('Uploading firmware...', 'info');
+        const resp = await uploadFile(file, 'firmware');
+        showToast('Firmware uploaded! Rebooting...', 'success');
+        
+        // Device will reboot, wait and reload
+        setTimeout(() => {
+            showOtaOverlay();
+            document.getElementById('otaModalStatus').textContent = 'Rebooting...';
+            waitForReboot();
+        }, 1000);
+    } catch (e) {
+        showToast('Upload failed: ' + e.message, 'error');
+        document.getElementById('uploadProgress').style.display = 'none';
+    }
+}
+
+async function uploadSpiffs() {
+    const input = document.getElementById('spiffsFile');
+    if (!input.files.length) {
+        showToast('Please select a SPIFFS file', 'warning');
+        return;
+    }
+    
+    const file = input.files[0];
+    if (!file.name.endsWith('.bin')) {
+        showToast('Please select a .bin file', 'warning');
+        return;
+    }
+    
+    try {
+        showToast('Uploading SPIFFS...', 'info');
+        const resp = await uploadFile(file, 'spiffs');
+        showToast('SPIFFS updated! Refresh page to see changes.', 'success');
+        document.getElementById('uploadProgress').style.display = 'none';
+        input.value = '';
+    } catch (e) {
+        showToast('Upload failed: ' + e.message, 'error');
+        document.getElementById('uploadProgress').style.display = 'none';
+    }
+}
+
+function waitForReboot() {
+    let attempts = 0;
+    const maxAttempts = 30;
+    
+    const check = async () => {
+        attempts++;
+        try {
+            await fetch('/api/status', { timeout: 2000 });
+            // Device is back
+            document.getElementById('uploadProgress').style.display = 'none';
+            hideOtaOverlay();
+            showToast('Device rebooted successfully!', 'success');
+            setTimeout(() => location.reload(), 1000);
+        } catch (_) {
+            if (attempts < maxAttempts) {
+                setTimeout(check, 2000);
+            } else {
+                hideOtaOverlay();
+                showToast('Device may have rebooted. Please refresh manually.', 'warning');
+            }
+        }
+    };
+    
+    setTimeout(check, 3000);
+}
+
 function showOtaOverlay() {
     document.getElementById('otaOverlay').style.display = 'flex';
     document.getElementById('otaModalStatus').textContent = 'Preparing...';

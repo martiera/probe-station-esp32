@@ -7,6 +7,7 @@
 #include "web_server.h"
 #include <ArduinoJson.h>
 #include <SPIFFS.h>
+#include <Update.h>
 #include "wifi_manager.h"
 #include "mqtt_client.h"
 #include "ota_manager.h"
@@ -223,6 +224,17 @@ void WebServer::setupRoutes() {
         handleGetOtaStatus(request);
     });
 
+    // Manual OTA - set release info directly (bypasses GitHub API)
+    AsyncCallbackJsonWebHandler* otaSetHandler = new AsyncCallbackJsonWebHandler(
+        "/api/ota/set",
+        [this](AsyncWebServerRequest* request, JsonVariant& json) {
+            String jsonStr;
+            serializeJson(json, jsonStr);
+            handleSetOtaInfo(request, (uint8_t*)jsonStr.c_str(), jsonStr.length());
+        }
+    );
+    _server.addHandler(otaSetHandler);
+
     AsyncCallbackJsonWebHandler* otaUpdateHandler = new AsyncCallbackJsonWebHandler(
         "/api/ota/update",
         [this](AsyncWebServerRequest* request, JsonVariant& json) {
@@ -232,6 +244,16 @@ void WebServer::setupRoutes() {
         }
     );
     _server.addHandler(otaUpdateHandler);
+    
+    // Direct firmware upload endpoint
+    _server.on("/api/ota/upload", HTTP_POST, 
+        [this](AsyncWebServerRequest* request) {
+            handleUploadComplete(request);
+        },
+        [this](AsyncWebServerRequest* request, const String& filename, size_t index, uint8_t* data, size_t len, bool final) {
+            handleUploadData(request, filename, index, data, len, final);
+        }
+    );
     
     // ========== Calibration ==========
     AsyncCallbackJsonWebHandler* calibrateHandler = new AsyncCallbackJsonWebHandler(
@@ -971,6 +993,51 @@ void WebServer::handleGetOtaStatus(AsyncWebServerRequest* request) {
     sendJson(request, 200, out.c_str());
 }
 
+void WebServer::handleSetOtaInfo(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
+    if (!configManager.getSystemConfig().otaEnabled) {
+        sendError(request, 403, "OTA disabled");
+        return;
+    }
+
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, data, len);
+    if (error) {
+        sendError(request, 400, "Invalid JSON");
+        return;
+    }
+
+    // Accept either full URLs or just version tag
+    String tag = doc["tag"] | doc["version"] | "";
+    String firmwareUrl = doc["firmwareUrl"] | "";
+    String spiffsUrl = doc["spiffsUrl"] | "";
+
+    if (tag.length() == 0) {
+        sendError(request, 400, "Missing required field: tag or version (e.g. 'v1.0.22')");
+        return;
+    }
+
+    // If URLs not provided, construct from version tag
+    if (firmwareUrl.length() == 0) {
+        firmwareUrl = "https://github.com/martiera/probe-station-esp32/releases/download/" + tag + "/firmware.bin";
+    }
+    if (spiffsUrl.length() == 0) {
+        spiffsUrl = "https://github.com/martiera/probe-station-esp32/releases/download/" + tag + "/spiffs.bin";
+    }
+
+    otaManager.setReleaseInfo(tag, firmwareUrl, spiffsUrl);
+
+    JsonDocument resp;
+    resp["success"] = true;
+    resp["message"] = "Release info set manually";
+    resp["tag"] = tag;
+    resp["firmwareUrl"] = firmwareUrl;
+    resp["spiffsUrl"] = spiffsUrl;
+
+    String out;
+    serializeJson(resp, out);
+    sendJson(request, 200, out.c_str());
+}
+
 void WebServer::handleStartOtaUpdate(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
     if (!configManager.getSystemConfig().otaEnabled) {
         sendError(request, 403, "OTA disabled");
@@ -1115,4 +1182,91 @@ void WebServer::buildSensorJson(JsonObject& obj, uint8_t sensorIndex) {
         obj["thresholdHigh"] = config->thresholdHigh;
         obj["alertEnabled"] = config->alertEnabled;
     }
+}
+
+// ============================================================================
+// Direct Firmware Upload Handlers
+// ============================================================================
+
+void WebServer::handleUploadData(AsyncWebServerRequest* request, const String& filename, size_t index, uint8_t* data, size_t len, bool final) {
+    if (!configManager.getSystemConfig().otaEnabled) {
+        _uploadError = true;
+        _uploadErrorMsg = "OTA disabled in settings";
+        return;
+    }
+    
+    // First chunk - initialize
+    if (index == 0) {
+        _uploadError = false;
+        _uploadErrorMsg = "";
+        
+        // Determine update type from filename
+        if (filename.indexOf("spiffs") >= 0 || filename.indexOf("littlefs") >= 0) {
+            _uploadType = U_SPIFFS;
+            Serial.printf("[Upload] Starting SPIFFS upload: %s\n", filename.c_str());
+        } else {
+            _uploadType = U_FLASH;
+            Serial.printf("[Upload] Starting firmware upload: %s\n", filename.c_str());
+        }
+        
+        // Get partition size
+        size_t maxSize = (_uploadType == U_SPIFFS) ? 
+            UPDATE_SIZE_UNKNOWN : // SPIFFS will check partition
+            (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
+        
+        if (!Update.begin(maxSize, _uploadType)) {
+            _uploadError = true;
+            _uploadErrorMsg = "Update.begin failed: " + String(Update.errorString());
+            Serial.println(_uploadErrorMsg);
+            return;
+        }
+    }
+    
+    if (_uploadError) return;
+    
+    // Write data chunk
+    if (Update.write(data, len) != len) {
+        _uploadError = true;
+        _uploadErrorMsg = "Write failed: " + String(Update.errorString());
+        Serial.println(_uploadErrorMsg);
+        return;
+    }
+    
+    // Final chunk
+    if (final) {
+        if (!Update.end(true)) {
+            _uploadError = true;
+            _uploadErrorMsg = "Update.end failed: " + String(Update.errorString());
+            Serial.println(_uploadErrorMsg);
+        } else {
+            Serial.printf("[Upload] Success! Total: %u bytes\n", index + len);
+        }
+    }
+}
+
+void WebServer::handleUploadComplete(AsyncWebServerRequest* request) {
+    JsonDocument doc;
+    
+    if (_uploadError) {
+        doc["success"] = false;
+        doc["error"] = _uploadErrorMsg;
+        String out;
+        serializeJson(doc, out);
+        sendJson(request, 400, out.c_str());
+    } else {
+        doc["success"] = true;
+        doc["message"] = (_uploadType == U_SPIFFS) ? "SPIFFS updated" : "Firmware updated";
+        doc["reboot"] = (_uploadType == U_FLASH); // Firmware needs reboot
+        String out;
+        serializeJson(doc, out);
+        sendJson(request, 200, out.c_str());
+        
+        // Reboot after firmware update (with delay for response)
+        if (_uploadType == U_FLASH) {
+            delay(500);
+            ESP.restart();
+        }
+    }
+    
+    _uploadType = 0;
 }

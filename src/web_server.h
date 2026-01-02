@@ -188,9 +188,25 @@ private:
     void handleGetOtaStatus(AsyncWebServerRequest* request);
 
     /**
+     * POST /api/ota/set - Manually set release info (bypasses GitHub API)
+     */
+    void handleSetOtaInfo(AsyncWebServerRequest* request, uint8_t* data, size_t len);
+
+    /**
      * POST /api/ota/update - Start OTA update
      */
     void handleStartOtaUpdate(AsyncWebServerRequest* request, uint8_t* data, size_t len);
+    
+    /**
+     * POST /api/ota/upload - Direct firmware/SPIFFS upload
+     */
+    void handleUploadData(AsyncWebServerRequest* request, const String& filename, size_t index, uint8_t* data, size_t len, bool final);
+    void handleUploadComplete(AsyncWebServerRequest* request);
+    
+    // Upload state
+    int _uploadType = 0; // 0=none, U_FLASH=firmware, U_SPIFFS=spiffs
+    bool _uploadError = false;
+    String _uploadErrorMsg;
     
     // ========================================================================
     // WebSocket Handlers

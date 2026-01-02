@@ -286,6 +286,30 @@
                 </div>
                 <p class="ota-status-text" id="otaStatus">--</p>
                 <button class="btn btn-primary" id="otaUpdateBtn" onclick="handleOtaButton()">🔄 Check for Updates</button>
+                
+                <!-- Direct Upload -->
+                <div class="upload-section">
+                    <h3>Manual Upload</h3>
+                    <p class="help-text">Upload firmware (.bin) files directly - no internet required. Upload SPIFFS first, then firmware (which reboots the device).</p>
+                    <div class="upload-controls">
+                        <div class="upload-row">
+                            <label class="upload-label">1. SPIFFS:</label>
+                            <input type="file" id="spiffsFile" accept=".bin" class="file-input">
+                            <button class="btn btn-secondary btn-sm" onclick="uploadSpiffs()">Upload</button>
+                        </div>
+                        <div class="upload-row">
+                            <label class="upload-label">2. Firmware:</label>
+                            <input type="file" id="firmwareFile" accept=".bin" class="file-input">
+                            <button class="btn btn-secondary btn-sm" onclick="uploadFirmware()">Upload</button>
+                        </div>
+                    </div>
+                    <div class="upload-progress" id="uploadProgress" style="display:none;">
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="uploadProgressFill"></div>
+                        </div>
+                        <span class="progress-text" id="uploadProgressText">0%</span>
+                    </div>
+                </div>
             </div>
 
             <!-- Actions -->
