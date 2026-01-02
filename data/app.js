@@ -1496,6 +1496,20 @@ function initChart() {
         chartSelectedSensor = e.target.value;
         drawChart();
     });
+    
+    // Redraw chart on window resize/orientation change (debounced)
+    let resizeTimer;
+    const handleResize = () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+            if (chartDataLoaded) {
+                drawChart();
+            }
+        }, 300);
+    };
+    
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
 }
 
 // Load initial chart history from ESP32 API (last ~1 minute of data)
@@ -1661,10 +1675,21 @@ function drawChart() {
     // Responsive sizing - use smaller width on mobile for better proportions
     const isMobile = window.innerWidth < 768;
     const width = isMobile ? 400 : 800;
-    const height = isMobile ? 400 : 300;
+    
+    // Calculate legend rows needed (for "All Sensors" mode only)
+    const legendItemWidth = 150;
+    const maxItemsPerRow = Math.floor((width - 40) / legendItemWidth); // 40 = left+right padding
+    const sensorCount = Object.keys(chartData).filter(addr => chartData[addr] && chartData[addr].length > 0).length;
+    const legendRows = Math.ceil(sensorCount / maxItemsPerRow);
+    const legendHeight = legendRows * 20 + 20; // 20px per row + 20px top spacing
+    
+    // Dynamic height: base height + legend space (only when showing all sensors)
+    const baseHeight = isMobile ? 400 : 300;
+    const height = !chartSelectedSensor && sensorCount > 0 ? baseHeight + legendHeight : baseHeight;
+    
     const padding = { top: 20, right: 20, bottom: 60, left: 50 };
     const chartWidth = width - padding.left - padding.right;
-    const chartHeight = height - padding.top - padding.bottom;
+    const chartHeight = height - padding.top - padding.bottom - (sensorCount > 0 && !chartSelectedSensor ? legendHeight : 0);
     
     // Update SVG viewBox
     svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
@@ -1826,16 +1851,17 @@ function drawChart() {
         svg.appendChild(path);
     });
     
-    // Legend - positioned at bottom
+    // Legend - positioned below chart with dynamic spacing
     if (!chartSelectedSensor && dataToPlot.length > 0) {
         const legendItemWidth = 150;
         const itemsPerRow = Math.floor((width - padding.left - padding.right) / legendItemWidth);
+        const legendStartY = padding.top + chartHeight + 35; // Position below time labels
         
         dataToPlot.forEach(({ sensor, color }, i) => {
             const row = Math.floor(i / itemsPerRow);
             const col = i % itemsPerRow;
             const x = padding.left + col * legendItemWidth;
-            const y = height - padding.bottom + 35 + row * 20;
+            const y = legendStartY + row * 20;
             
             const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
             rect.setAttribute('x', x);

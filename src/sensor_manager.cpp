@@ -406,6 +406,22 @@ void SensorManager::resetSensorCalibration(uint8_t index) {
     }
 }
 
+void SensorManager::recalculateTemperature(uint8_t index) {
+    if (index >= _sensorCount || !_sensorData[index].connected) {
+        return;
+    }
+    
+    // Recalculate temperature using current raw temperature and updated offset
+    _sensorData[index].temperature = applyCalibration(index, 
+        _sensorData[index].rawTemperature);
+    
+    Serial.printf("[SensorManager] Recalculated temperature for sensor %d: %.2f°C (raw: %.2f°C)\n",
+        index, _sensorData[index].temperature, _sensorData[index].rawTemperature);
+    
+    // Mark data as changed to trigger WebSocket update
+    _dataChanged = true;
+}
+
 float SensorManager::getAverageTemperature() const {
     float sum = 0;
     uint8_t count = 0;

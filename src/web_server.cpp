@@ -479,6 +479,11 @@ void WebServer::handleUpdateSensor(AsyncWebServerRequest* request, uint8_t senso
     }
     if (doc["calibrationOffset"].is<JsonVariant>()) {
         config->calibrationOffset = doc["calibrationOffset"];
+        
+        // Immediately recalculate temperature with new offset
+        sensorManager.recalculateTemperature(sensorIndex);
+        Serial.printf("[WebServer] Updated calibration offset for sensor %d: %.2f\n", 
+            sensorIndex, config->calibrationOffset);
     }
     
     configManager.markDirty();

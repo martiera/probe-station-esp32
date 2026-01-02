@@ -211,6 +211,13 @@ public:
     void resetSensorCalibration(uint8_t index);
     
     /**
+     * Recalculate temperature for a sensor using current calibration offset
+     * Used when offset is manually adjusted via web interface
+     * @param index Sensor index
+     */
+    void recalculateTemperature(uint8_t index);
+    
+    /**
      * Get average temperature across all connected sensors
      * @return Average temperature or TEMP_INVALID if no sensors connected
      */

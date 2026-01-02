@@ -27,6 +27,8 @@ namespace {
 constexpr uint32_t RELEASE_INFO_TTL_MS = 5UL * 60UL * 1000UL; // 5 min
 constexpr uint32_t AUTO_CHECK_INTERVAL_MS = 24UL * 60UL * 60UL * 1000UL; // 24 hours
 constexpr uint32_t HTTP_TIMEOUT_MS = 15000;
+constexpr uint8_t HTTP_MAX_RETRIES = 3; // Retry up to 3 times
+constexpr uint32_t HTTP_RETRY_DELAY_MS = 2000; // Initial retry delay (exponential backoff)
 
 // Parse version string (e.g., "v1.0.7" or "1.0.7") into comparable integer
 // Returns: major*10000 + minor*100 + patch
@@ -234,66 +236,108 @@ String githubApiLatestReleaseUrl() {
 // ============================================================================
 
 bool httpGetToString(const String& url, String& out, String& error, size_t maxBytes) {
-    WiFiClientSecure client;
-    client.setInsecure();
-    client.setTimeout(HTTP_TIMEOUT_MS / 1000);
+    uint8_t retries = 0;
+    uint32_t retryDelay = HTTP_RETRY_DELAY_MS;
+    
+    while (retries <= HTTP_MAX_RETRIES) {
+        if (retries > 0) {
+            Serial.printf("[OTA] Retry %d/%d after %dms delay...\n", 
+                retries, HTTP_MAX_RETRIES, retryDelay);
+            delay(retryDelay);
+            retryDelay *= 2; // Exponential backoff
+        }
+        
+        WiFiClientSecure client;
+        client.setInsecure();
+        client.setTimeout(HTTP_TIMEOUT_MS / 1000);
 
-    HTTPClient http;
-    http.setTimeout(HTTP_TIMEOUT_MS);
-    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+        HTTPClient http;
+        http.setTimeout(HTTP_TIMEOUT_MS);
+        http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
-    if (!http.begin(client, url)) {
-        error = "HTTP begin failed";
-        return false;
-    }
-
-    http.addHeader("User-Agent", "probe-station-esp32");
-    int code = http.GET();
-    if (code <= 0) {
-        error = String("HTTP GET failed: ") + http.errorToString(code);
-        http.end();
-        return false;
-    }
-    if (code != HTTP_CODE_OK) {
-        error = String("HTTP ") + code;
-        http.end();
-        return false;
-    }
-
-    WiFiClient* stream = http.getStreamPtr();
-    out = "";
-    out.reserve((maxBytes > 1024) ? 1024 : maxBytes);
-
-    uint8_t buf[512];
-    size_t total = 0;
-    uint32_t startMs = millis();
-    while (http.connected() && (millis() - startMs) < HTTP_TIMEOUT_MS) {
-        int avail = stream->available();
-        if (avail <= 0) {
-            delay(1);
+        if (!http.begin(client, url)) {
+            error = "HTTP begin failed";
+            retries++;
             continue;
         }
-        int toRead = avail;
-        if (toRead > (int)sizeof(buf)) toRead = sizeof(buf);
-        int r = stream->readBytes(buf, toRead);
-        if (r <= 0) break;
 
-        size_t canTake = r;
-        if (total + canTake > maxBytes) {
-            canTake = maxBytes - total;
+        http.addHeader("User-Agent", "probe-station-esp32");
+        int code = http.GET();
+        
+        if (code <= 0) {
+            error = String("HTTP GET failed: ") + http.errorToString(code);
+            http.end();
+            
+            // Check if it's a connection error that's worth retrying
+            if (code == HTTPC_ERROR_CONNECTION_REFUSED || 
+                code == HTTPC_ERROR_CONNECTION_LOST ||
+                code == HTTPC_ERROR_NO_HTTP_SERVER) {
+                retries++;
+                continue;
+            }
+            
+            // Other errors (timeout, etc.) - don't retry
+            return false;
         }
-        out.concat((const char*)buf, canTake);
-        total += canTake;
-        if (total >= maxBytes) break;
-    }
+        
+        if (code == HTTP_CODE_FORBIDDEN || code == HTTP_CODE_TOO_MANY_REQUESTS) {
+            // GitHub rate limiting - wait longer and retry
+            error = String("HTTP ") + code + " (rate limited)";
+            http.end();
+            retries++;
+            retryDelay = 5000; // Wait 5 seconds for rate limit
+            continue;
+        }
+        
+        if (code != HTTP_CODE_OK) {
+            error = String("HTTP ") + code;
+            http.end();
+            return false;
+        }
 
-    http.end();
-    
-    if (total == 0) {
-        error = "No data received";
-        return false;
+        // Success - read response
+        WiFiClient* stream = http.getStreamPtr();
+        out = "";
+        out.reserve((maxBytes > 1024) ? 1024 : maxBytes);
+
+        uint8_t buf[512];
+        size_t total = 0;
+        uint32_t startMs = millis();
+        while (http.connected() && (millis() - startMs) < HTTP_TIMEOUT_MS) {
+            int avail = stream->available();
+            if (avail <= 0) {
+                delay(1);
+                continue;
+            }
+            int toRead = avail;
+            if (toRead > (int)sizeof(buf)) toRead = sizeof(buf);
+            int r = stream->readBytes(buf, toRead);
+            if (r <= 0) break;
+
+            size_t canTake = r;
+            if (total + canTake > maxBytes) {
+                canTake = maxBytes - total;
+            }
+            out.concat((const char*)buf, canTake);
+            total += canTake;
+            if (total >= maxBytes) break;
+        }
+
+        http.end();
+        
+        if (total == 0) {
+            error = "No data received";
+            retries++;
+            continue;
+        }
+        
+        // Success!
+        return true;
     }
-    return true;
+    
+    // All retries exhausted
+    Serial.printf("[OTA] All %d retries exhausted\n", HTTP_MAX_RETRIES);
+    return false;
 }
 
 } // namespace
