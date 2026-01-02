@@ -71,7 +71,6 @@ constexpr float TEMP_INVALID = -127.0f;
 
 // Access Point settings (when no WiFi available)
 constexpr char AP_SSID[] = "TempMonitor-Setup";
-constexpr char AP_PASSWORD[] = "tempmonitor123";
 constexpr uint8_t AP_CHANNEL = 1;
 constexpr uint8_t AP_MAX_CONNECTIONS = 4;
 

@@ -84,8 +84,16 @@ private:
     uint32_t lastUpdate = 0;
     uint32_t lastButtonPress = 0;
     uint32_t lastAutoRotate = 0;
-    bool needsRefresh = true;
+    bool needsRefresh = true;      // Full redraw needed (page change)
     bool otaMode = false;
+    
+    // State tracking for partial updates (only redraw what changed)
+    DisplayPage lastPage = DisplayPage::FOCUS;
+    uint8_t lastFocusSensorIndex = 255;
+    float lastDisplayedTemp[MAX_SENSORS] = {-999.0f};
+    bool lastAutoRotate_displayed = true;
+    bool lastWiFiConnected = false;
+    bool lastMQTTConnected = false;
     
     // Display constants
     static constexpr uint16_t DISPLAY_WIDTH = 240;
@@ -109,13 +117,17 @@ private:
     static constexpr uint16_t COLOR_MQTT_OFF = 0xF800;  // Red
     static constexpr uint16_t COLOR_GRAY = 0x7BEF;      // Gray
     
-    // Drawing methods
+    // Drawing methods (full redraw)
     void drawFocusPage();
     void drawSensorsPage();
     void drawStatusPage();
     void drawAlertsPage();
     void drawStatusBar();
     void drawFooter();
+    
+    // Partial update methods (only redraw changed values - no flicker)
+    void updateFocusPagePartial();
+    void updateSensorsPagePartial();
     
     // Helper methods
     uint16_t getTemperatureColor(float temp, float low, float high);

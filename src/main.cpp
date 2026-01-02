@@ -233,10 +233,14 @@ void setup() {
     Serial.println(F("╚════════════════════════════════════════╝"));
     Serial.println();
     
+    // Memory diagnostics at boot
+    Serial.printf("[MAIN] Boot heap: %u bytes free, largest block: %u bytes\n", 
+        ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    
     // Initialize LED pin
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
-    
+
 #ifdef USE_DISPLAY
     // Initialize buttons
     pinMode(BUTTON_1_PIN, INPUT_PULLUP);
@@ -245,6 +249,7 @@ void setup() {
     // Initialize display
     Serial.println(F("[MAIN] Initializing display..."));
     displayManager.begin();
+    Serial.printf("[MAIN] After display: %u bytes free\n", ESP.getFreeHeap());
 #endif
     
     // Initialize configuration manager (loads from SPIFFS)
@@ -270,6 +275,7 @@ void setup() {
     // Initialize web server (works in both AP and STA mode)
     Serial.println(F("[MAIN] Initializing web server..."));
     webServer.begin();
+    Serial.printf("[MAIN] After web server: %u bytes free\n", ESP.getFreeHeap());
     
     // Initialize OTA manager only if not in AP mode (requires internet connection)
     if (!wifiManager.isAPMode()) {
@@ -296,7 +302,7 @@ void setup() {
     
     if (wifiManager.isAPMode()) {
         Serial.printf("[MAIN]   http://%s/ (AP Mode)\n", wifiManager.getAPIP().toString().c_str());
-        Serial.printf("[MAIN]   WiFi: %s / %s\n", AP_SSID, AP_PASSWORD);
+        Serial.printf("[MAIN]   WiFi: %s\n", AP_SSID);
     }
     
     Serial.println();

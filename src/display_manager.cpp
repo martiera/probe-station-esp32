@@ -25,10 +25,11 @@ void DisplayManager::begin() {
     tft.setRotation(1);  // Landscape mode
     tft.fillScreen(COLOR_BG);
     
-    // Initialize sprite for flicker-free updates
-    sprite.createSprite(DISPLAY_WIDTH, DISPLAY_HEIGHT);
-    spriteValid = true;
-    sprite.setTextDatum(TL_DATUM);
+    // NOTE: Sprite disabled to save ~65KB RAM for TLS connections
+    // Drawing directly to TFT causes slight flicker but frees heap
+    // tft.createSprite(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    spriteValid = false;  // No sprite - draw directly to TFT
+    tft.setTextDatum(TL_DATUM);
     
     // Set backlight pin
     pinMode(TFT_BL, OUTPUT);
@@ -46,43 +47,26 @@ void DisplayManager::begin() {
 void DisplayManager::setOtaMode(bool enabled) {
 #ifdef USE_DISPLAY
     if (enabled) {
-        // CRITICAL: Set flags FIRST to stop all sprite access
         otaMode = true;
-        spriteValid = false;
         
-        // Wait for any in-progress display operations to complete
-        vTaskDelay(pdMS_TO_TICKS(50));
-        
-        // Now safe to delete sprite
-        sprite.deleteSprite();
-        vTaskDelay(pdMS_TO_TICKS(50));
-        
-        // Draw OTA message directly to TFT (no sprite)
+        // Draw OTA message directly to TFT
         tft.fillScreen(COLOR_BG);
         tft.setTextDatum(MC_DATUM);
         tft.setTextColor(TFT_YELLOW, COLOR_BG);
         tft.drawString("OTA Update", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 - 20, 4);
         tft.setTextColor(TFT_WHITE, COLOR_BG);
         tft.drawString("Please wait...", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 + 20, 2);
-        Serial.printf("[Display] OTA mode enabled, sprite freed. Heap: %u\n", ESP.getFreeHeap());
+        Serial.printf("[Display] OTA mode enabled. Heap: %u\n", ESP.getFreeHeap());
     } else {
-        vTaskDelay(pdMS_TO_TICKS(50));
-        sprite.createSprite(DISPLAY_WIDTH, DISPLAY_HEIGHT);
-        sprite.setTextDatum(TL_DATUM);
-        vTaskDelay(pdMS_TO_TICKS(50));
-        
-        // Re-enable after sprite is ready
-        spriteValid = true;
         otaMode = false;
         needsRefresh = true;
-        Serial.printf("[Display] OTA mode disabled, sprite restored. Heap: %u\n", ESP.getFreeHeap());
+        Serial.printf("[Display] OTA mode disabled. Heap: %u\n", ESP.getFreeHeap());
     }
 #endif
 }
 
 void DisplayManager::update() {
 #ifdef USE_DISPLAY
-    if (!spriteValid) return;
     // Skip updates during OTA
     if (otaMode) {
         return;
@@ -96,21 +80,31 @@ void DisplayManager::update() {
             uint8_t count = sensorManager->getSensorCount();
             if (count > 0) {
                 focusSensorIndex = (focusSensorIndex + 1) % count;
-                needsRefresh = true;
+                needsRefresh = true;  // Sensor changed - need full page redraw
             }
             lastAutoRotate = now;
         }
     }
     
-    // Update display at interval
-    if (needsRefresh || (now - lastUpdate >= UPDATE_INTERVAL)) {
-        sprite.fillSprite(COLOR_BG);
-        
+    // Check if page changed - requires full redraw
+    if (currentPage != lastPage) {
+        needsRefresh = true;
+        lastPage = currentPage;
+    }
+    
+    // Full redraw if needed (page change, first draw, etc.)
+    if (needsRefresh) {
+        tft.fillScreen(COLOR_BG);
         drawStatusBar();
         
         switch (currentPage) {
             case DisplayPage::FOCUS:
                 drawFocusPage();
+                lastFocusSensorIndex = focusSensorIndex;
+                if (sensorManager && focusSensorIndex < MAX_SENSORS) {
+                    const SensorData* s = sensorManager->getSensorData(focusSensorIndex);
+                    if (s) lastDisplayedTemp[focusSensorIndex] = s->temperature;
+                }
                 break;
             case DisplayPage::SENSORS:
                 drawSensorsPage();
@@ -124,12 +118,61 @@ void DisplayManager::update() {
         }
         
         drawFooter();
-        
-        // Push sprite to display
-        sprite.pushSprite(0, 0);
-        
+        lastAutoRotate_displayed = autoRotate;
         lastUpdate = now;
         needsRefresh = false;
+        return;
+    }
+    
+    // Partial updates - only redraw what changed
+    if (now - lastUpdate >= UPDATE_INTERVAL) {
+        bool statusBarChanged = false;
+        
+        // Check WiFi/MQTT status changes
+        if (wifiManager) {
+            bool wifiNow = wifiManager->isConnected();
+            if (wifiNow != lastWiFiConnected) {
+                lastWiFiConnected = wifiNow;
+                statusBarChanged = true;
+            }
+        }
+        if (mqttClient) {
+            bool mqttNow = mqttClient->isConnected();
+            if (mqttNow != lastMQTTConnected) {
+                lastMQTTConnected = mqttNow;
+                statusBarChanged = true;
+            }
+        }
+        
+        // Check auto-rotate indicator change
+        if (autoRotate != lastAutoRotate_displayed) {
+            statusBarChanged = true;
+            lastAutoRotate_displayed = autoRotate;
+        }
+        
+        if (statusBarChanged) {
+            drawStatusBar();
+        }
+        
+        // Page-specific partial updates
+        switch (currentPage) {
+            case DisplayPage::FOCUS:
+                updateFocusPagePartial();
+                break;
+            case DisplayPage::SENSORS:
+                updateSensorsPagePartial();
+                break;
+            case DisplayPage::STATUS:
+                // Status page - full redraw on change (complex layout)
+                drawStatusPage();
+                break;
+            case DisplayPage::ALERTS:
+                // Alerts page - full redraw on change
+                drawAlertsPage();
+                break;
+        }
+        
+        lastUpdate = now;
     }
 #endif
 }
@@ -259,22 +302,22 @@ void DisplayManager::drawStatusBar() {
     }
     
     // Draw top bar
-    sprite.fillRect(0, 0, DISPLAY_WIDTH, barHeight, barColor);
+    tft.fillRect(0, 0, DISPLAY_WIDTH, barHeight, barColor);
     
     // WiFi indicator (left)
-    sprite.setTextDatum(ML_DATUM);
-    sprite.setTextColor(COLOR_TEXT, barColor);
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(COLOR_TEXT, barColor);
     
     if (WiFi.status() == WL_CONNECTED) {
         int8_t rssi = WiFi.RSSI();
         const char* wifiIcon = rssi > -50 ? "WiFi" : rssi > -70 ? "WiFi" : "WiFi!";
-        sprite.drawString(wifiIcon, 4, barHeight/2, 2);
+        tft.drawString(wifiIcon, 4, barHeight/2, 2);
     } else {
-        sprite.drawString("AP", 4, barHeight/2, 2);
+        tft.drawString("AP", 4, barHeight/2, 2);
     }
     
     // Page name (center) - show AUTO/MAN for FOCUS page
-    sprite.setTextDatum(MC_DATUM);
+    tft.setTextDatum(MC_DATUM);
     const char* pageName = "";
     switch (currentPage) {
         case DisplayPage::FOCUS:   pageName = autoRotate ? "FOCUS-A" : "FOCUS-M"; break;
@@ -282,10 +325,10 @@ void DisplayManager::drawStatusBar() {
         case DisplayPage::STATUS:  pageName = "STATUS"; break;
         case DisplayPage::ALERTS:  pageName = "ALERTS"; break;
     }
-    sprite.drawString(pageName, DISPLAY_WIDTH/2, barHeight/2, 2);
+    tft.drawString(pageName, DISPLAY_WIDTH/2, barHeight/2, 2);
     
     // BTN1 action (right) - shown as button style
-    sprite.setTextDatum(MR_DATUM);
+    tft.setTextDatum(MR_DATUM);
     const char* btn1Text = "";
     switch (currentPage) {
         case DisplayPage::FOCUS:
@@ -299,7 +342,7 @@ void DisplayManager::drawStatusBar() {
             break;
     }
     if (btn1Text[0] != '\0') {
-        sprite.drawString(btn1Text, DISPLAY_WIDTH - 4, barHeight/2, 2);
+        tft.drawString(btn1Text, DISPLAY_WIDTH - 4, barHeight/2, 2);
     }
 #endif
 }
@@ -310,13 +353,13 @@ void DisplayManager::drawFooter() {
     const int16_t footerY = DISPLAY_HEIGHT - 16;
 
     // Firmware version (left bottom)
-    sprite.setTextDatum(ML_DATUM);
-    sprite.setTextColor(COLOR_GRAY, COLOR_BG);
-    sprite.drawString(FIRMWARE_VERSION, 4, footerY, 2);
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(COLOR_GRAY, COLOR_BG);
+    tft.drawString(FIRMWARE_VERSION, 4, footerY, 2);
     
     // Page indicator dots (center bottom) ● ○ ○ ○
-    sprite.setTextDatum(MC_DATUM);
-    sprite.setTextColor(COLOR_GRAY, COLOR_BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(COLOR_GRAY, COLOR_BG);
     
     char dots[16];
     uint8_t pageIdx = static_cast<uint8_t>(currentPage);
@@ -325,21 +368,21 @@ void DisplayManager::drawFooter() {
         pageIdx == 1 ? 'O' : 'o',
         pageIdx == 2 ? 'O' : 'o',
         pageIdx == 3 ? 'O' : 'o');
-    sprite.drawString(dots, DISPLAY_WIDTH/2, footerY, 2);
+    tft.drawString(dots, DISPLAY_WIDTH/2, footerY, 2);
     
     // Navigation arrow (right bottom)
-    sprite.setTextDatum(MR_DATUM);
-    sprite.setTextColor(COLOR_TEXT, COLOR_BG);
-    sprite.drawString(">>", DISPLAY_WIDTH - 4, footerY, 2);
+    tft.setTextDatum(MR_DATUM);
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.drawString(">>", DISPLAY_WIDTH - 4, footerY, 2);
 #endif
 }
 
 void DisplayManager::drawFocusPage() {
 #ifdef USE_DISPLAY
     if (sensorManager == nullptr || sensorManager->getSensorCount() == 0) {
-        sprite.setTextDatum(MC_DATUM);
-        sprite.setTextColor(TFT_YELLOW, COLOR_BG);
-        sprite.drawString("No Sensors", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2, 4);
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextColor(TFT_YELLOW, COLOR_BG);
+        tft.drawString("No Sensors", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2, 4);
         return;
     }
     
@@ -364,45 +407,45 @@ void DisplayManager::drawFocusPage() {
     }
     
     // Sensor name (top, medium font)
-    sprite.setTextDatum(TC_DATUM);
-    sprite.setTextColor(TFT_CYAN, COLOR_BG);
-    sprite.drawString(sensorName.c_str(), DISPLAY_WIDTH/2, 24, 2);
+    tft.setTextDatum(TC_DATUM);
+    tft.setTextColor(TFT_CYAN, COLOR_BG);
+    tft.drawString(sensorName.c_str(), DISPLAY_WIDTH/2, 24, 2);
     
     // Temperature (center, BIG font)
-    sprite.setTextDatum(MC_DATUM);
+    tft.setTextDatum(MC_DATUM);
     
     if (!sensor->connected) {
-        sprite.setTextColor(COLOR_TEMP_ALERT, COLOR_BG);
-        sprite.drawString("ERROR", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 + 5, 4);
+        tft.setTextColor(COLOR_TEMP_ALERT, COLOR_BG);
+        tft.drawString("ERROR", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 + 5, 4);
     } else {
         uint16_t tempColor = getTemperatureColor(sensor->temperature, lowThreshold, highThreshold);
-        sprite.setTextColor(tempColor, COLOR_BG);
+        tft.setTextColor(tempColor, COLOR_BG);
         
-        // Draw temperature with Font 6 (48px numbers)
+        // Draw temperature with Font 4 (26px numbers) - Font 6 removed to save ~25KB RAM
         char tempStr[16];
         snprintf(tempStr, sizeof(tempStr), "%.1f", sensor->temperature);
-        sprite.drawString(tempStr, DISPLAY_WIDTH/2 - 15, DISPLAY_HEIGHT/2 + 5, 6);
+        tft.drawString(tempStr, DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 + 5, 4);
         
         // Draw °C with smaller font
-        sprite.setTextDatum(ML_DATUM);
-        sprite.drawString("C", DISPLAY_WIDTH/2 + 55, DISPLAY_HEIGHT/2 + 5, 4);
+        tft.setTextDatum(ML_DATUM);
+        tft.drawString("C", DISPLAY_WIDTH/2 + 55, DISPLAY_HEIGHT/2 + 5, 4);
     }
     
     // Sensor index indicator - position above bottom bar
-    sprite.setTextDatum(MC_DATUM);
-    sprite.setTextColor(COLOR_GRAY, COLOR_BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(COLOR_GRAY, COLOR_BG);
     char idxStr[16];
     snprintf(idxStr, sizeof(idxStr), "< %d/%d >", focusSensorIndex + 1, count);
-    sprite.drawString(idxStr, DISPLAY_WIDTH/2, DISPLAY_HEIGHT - 28, 2);
+    tft.drawString(idxStr, DISPLAY_WIDTH/2, DISPLAY_HEIGHT - 28, 2);
 #endif
 }
 
 void DisplayManager::drawSensorsPage() {
 #ifdef USE_DISPLAY
     if (sensorManager == nullptr || sensorManager->getSensorCount() == 0) {
-        sprite.setTextDatum(MC_DATUM);
-        sprite.setTextColor(TFT_YELLOW, COLOR_BG);
-        sprite.drawString("No Sensors", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2, 4);
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextColor(TFT_YELLOW, COLOR_BG);
+        tft.drawString("No Sensors", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2, 4);
         return;
     }
     
@@ -433,42 +476,42 @@ void DisplayManager::drawSensorsPage() {
         }
         
         // Sensor name (left, truncated if needed)
-        sprite.setTextDatum(TL_DATUM);
-        sprite.setTextColor(TFT_CYAN, COLOR_BG);
+        tft.setTextDatum(TL_DATUM);
+        tft.setTextColor(TFT_CYAN, COLOR_BG);
         
         String displayName = sensorName;
         if (displayName.length() > 12) {
             displayName = displayName.substring(0, 10) + "..";
         }
-        sprite.drawString(displayName.c_str(), 4, y, 2);
+        tft.drawString(displayName.c_str(), 4, y, 2);
         
         // Temperature (right, large font 4)
-        sprite.setTextDatum(TR_DATUM);
+        tft.setTextDatum(TR_DATUM);
         
         if (!sensor->connected) {
-            sprite.setTextColor(COLOR_TEMP_ALERT, COLOR_BG);
-            sprite.drawString("ERR", DISPLAY_WIDTH - 4, y, 4);
+            tft.setTextColor(COLOR_TEMP_ALERT, COLOR_BG);
+            tft.drawString("ERR", DISPLAY_WIDTH - 4, y, 4);
         } else {
             uint16_t tempColor = getTemperatureColor(sensor->temperature, lowThreshold, highThreshold);
-            sprite.setTextColor(tempColor, COLOR_BG);
+            tft.setTextColor(tempColor, COLOR_BG);
             
             char tempStr[16];
             snprintf(tempStr, sizeof(tempStr), "%.1fC", sensor->temperature);
-            sprite.drawString(tempStr, DISPLAY_WIDTH - 4, y, 4);
+            tft.drawString(tempStr, DISPLAY_WIDTH - 4, y, 4);
         }
         
         // Separator line
         if (i < SENSORS_PER_PAGE - 1 && (sensorPageOffset + i + 1) < count) {
-            sprite.drawLine(4, y + rowHeight - 4, DISPLAY_WIDTH - 4, y + rowHeight - 4, COLOR_GRAY);
+            tft.drawLine(4, y + rowHeight - 4, DISPLAY_WIDTH - 4, y + rowHeight - 4, COLOR_GRAY);
         }
     }
     
     // Page indicator - position above bottom bar
-    sprite.setTextDatum(MC_DATUM);
-    sprite.setTextColor(COLOR_GRAY, COLOR_BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(COLOR_GRAY, COLOR_BG);
     char pageStr[16];
     snprintf(pageStr, sizeof(pageStr), "%d/%d", currentPageNum + 1, totalPages);
-    sprite.drawString(pageStr, DISPLAY_WIDTH/2, DISPLAY_HEIGHT - 28, 2);
+    tft.drawString(pageStr, DISPLAY_WIDTH/2, DISPLAY_HEIGHT - 28, 2);
 #endif
 }
 
@@ -478,41 +521,41 @@ void DisplayManager::drawStatusPage() {
     int16_t lineHeight = 32;
     
     // WiFi Status - IP with bigger font
-    sprite.setTextDatum(TL_DATUM);
-    sprite.setTextColor(COLOR_TEXT, COLOR_BG);
-    sprite.drawString("WiFi:", 8, y, 2);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.drawString("WiFi:", 8, y, 2);
     
-    sprite.setTextDatum(TR_DATUM);
+    tft.setTextDatum(TR_DATUM);
     if (WiFi.status() == WL_CONNECTED) {
-        sprite.setTextColor(COLOR_WIFI_ON, COLOR_BG);
-        sprite.drawString(WiFi.localIP().toString().c_str(), DISPLAY_WIDTH - 8, y, 4);
+        tft.setTextColor(COLOR_WIFI_ON, COLOR_BG);
+        tft.drawString(WiFi.localIP().toString().c_str(), DISPLAY_WIDTH - 8, y, 4);
     } else {
-        sprite.setTextColor(COLOR_WIFI_OFF, COLOR_BG);
-        sprite.drawString("192.168.4.1", DISPLAY_WIDTH - 8, y, 4);
+        tft.setTextColor(COLOR_WIFI_OFF, COLOR_BG);
+        tft.drawString("192.168.4.1", DISPLAY_WIDTH - 8, y, 4);
     }
     y += lineHeight;
     
     // MQTT Status
-    sprite.setTextDatum(TL_DATUM);
-    sprite.setTextColor(COLOR_TEXT, COLOR_BG);
-    sprite.drawString("MQTT:", 8, y, 2);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.drawString("MQTT:", 8, y, 2);
     
-    sprite.setTextDatum(TR_DATUM);
+    tft.setTextDatum(TR_DATUM);
     if (mqttClient != nullptr && mqttClient->isConnected()) {
-        sprite.setTextColor(COLOR_MQTT_ON, COLOR_BG);
-        sprite.drawString("Connected", DISPLAY_WIDTH - 8, y, 2);
+        tft.setTextColor(COLOR_MQTT_ON, COLOR_BG);
+        tft.drawString("Connected", DISPLAY_WIDTH - 8, y, 2);
     } else {
-        sprite.setTextColor(COLOR_GRAY, COLOR_BG);
-        sprite.drawString("Disconnected", DISPLAY_WIDTH - 8, y, 2);
+        tft.setTextColor(COLOR_GRAY, COLOR_BG);
+        tft.drawString("Disconnected", DISPLAY_WIDTH - 8, y, 2);
     }
     y += lineHeight;
     
     // Uptime
-    sprite.setTextDatum(TL_DATUM);
-    sprite.setTextColor(COLOR_TEXT, COLOR_BG);
-    sprite.drawString("Up:", 8, y, 2);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.drawString("Up:", 8, y, 2);
     
-    sprite.setTextDatum(TR_DATUM);
+    tft.setTextDatum(TR_DATUM);
     uint32_t uptime = millis() / 1000;
     uint16_t days = uptime / 86400;
     uint8_t hours = (uptime % 86400) / 3600;
@@ -524,17 +567,17 @@ void DisplayManager::drawStatusPage() {
     } else {
         snprintf(uptimeStr, sizeof(uptimeStr), "%02dh %02dm", hours, mins);
     }
-    sprite.setTextColor(COLOR_TEMP_OK, COLOR_BG);
-    sprite.drawString(uptimeStr, DISPLAY_WIDTH - 8, y, 2);
+    tft.setTextColor(COLOR_TEMP_OK, COLOR_BG);
+    tft.drawString(uptimeStr, DISPLAY_WIDTH - 8, y, 2);
 #endif
 }
 
 void DisplayManager::drawAlertsPage() {
 #ifdef USE_DISPLAY
     if (sensorManager == nullptr) {
-        sprite.setTextDatum(MC_DATUM);
-        sprite.setTextColor(COLOR_GRAY, COLOR_BG);
-        sprite.drawString("No Data", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2, 2);
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextColor(COLOR_GRAY, COLOR_BG);
+        tft.drawString("No Data", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2, 2);
         return;
     }
     
@@ -548,9 +591,9 @@ void DisplayManager::drawAlertsPage() {
     }
     
     if (alertCount == 0) {
-        sprite.setTextDatum(MC_DATUM);
-        sprite.setTextColor(COLOR_TEMP_OK, COLOR_BG);
-        sprite.drawString("All Normal", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2, 4);
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextColor(COLOR_TEMP_OK, COLOR_BG);
+        tft.drawString("All Normal", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2, 4);
         return;
     }
     
@@ -576,12 +619,12 @@ void DisplayManager::drawAlertsPage() {
         }
         
         // Draw alert
-        sprite.setTextDatum(TL_DATUM);
+        tft.setTextDatum(TL_DATUM);
         uint16_t alertColor = getAlarmColor(sensor->alarmState);
-        sprite.setTextColor(alertColor, COLOR_BG);
-        sprite.drawString(sensorName.c_str(), 8, y, 2);
+        tft.setTextColor(alertColor, COLOR_BG);
+        tft.drawString(sensorName.c_str(), 8, y, 2);
         
-        sprite.setTextDatum(TR_DATUM);
+        tft.setTextDatum(TR_DATUM);
         const char* alertText = "";
         switch (sensor->alarmState) {
             case AlarmState::ABOVE_HIGH: alertText = "HIGH!"; break;
@@ -589,7 +632,7 @@ void DisplayManager::drawAlertsPage() {
             case AlarmState::SENSOR_ERROR: alertText = "ERROR"; break;
             default: alertText = "???"; break;
         }
-        sprite.drawString(alertText, DISPLAY_WIDTH - 8, y, 2);
+        tft.drawString(alertText, DISPLAY_WIDTH - 8, y, 2);
         
         y += lineHeight;
         shown++;
@@ -597,11 +640,11 @@ void DisplayManager::drawAlertsPage() {
     
     // Show count if more alerts - position above bottom bar
     if (alertCount > 3) {
-        sprite.setTextDatum(MC_DATUM);
-        sprite.setTextColor(COLOR_TEMP_WARN, COLOR_BG);
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextColor(COLOR_TEMP_WARN, COLOR_BG);
         char moreStr[16];
         snprintf(moreStr, sizeof(moreStr), "+%d more", alertCount - 3);
-        sprite.drawString(moreStr, DISPLAY_WIDTH/2, DISPLAY_HEIGHT - 28, 2);
+        tft.drawString(moreStr, DISPLAY_WIDTH/2, DISPLAY_HEIGHT - 28, 2);
     }
 #endif
 }
@@ -620,4 +663,120 @@ uint16_t DisplayManager::getAlarmColor(AlarmState state) {
         case AlarmState::SENSOR_ERROR: return COLOR_TEMP_WARN;
         default: return COLOR_TEMP_OK;
     }
+}
+
+// ============================================================================
+// Partial Update Functions - Only redraw what changed (no flicker!)
+// ============================================================================
+
+void DisplayManager::updateFocusPagePartial() {
+#ifdef USE_DISPLAY
+    if (sensorManager == nullptr || sensorManager->getSensorCount() == 0) return;
+    
+    uint8_t count = sensorManager->getSensorCount();
+    if (focusSensorIndex >= count) focusSensorIndex = 0;
+    
+    const SensorData* sensor = sensorManager->getSensorData(focusSensorIndex);
+    if (sensor == nullptr) return;
+    
+    // Check if temperature changed significantly (0.1° threshold)
+    float currentTemp = sensor->temperature;
+    float lastTemp = (focusSensorIndex < MAX_SENSORS) ? lastDisplayedTemp[focusSensorIndex] : -999.0f;
+    
+    if (fabsf(currentTemp - lastTemp) < 0.05f) {
+        return;  // No significant change - skip update
+    }
+    
+    // Get thresholds
+    float lowThreshold = DEFAULT_THRESHOLD_LOW;
+    float highThreshold = DEFAULT_THRESHOLD_HIGH;
+    const SensorConfig* cfg = configManager.getSensorConfigByAddress(sensor->addressStr);
+    if (cfg != nullptr) {
+        lowThreshold = cfg->thresholdLow;
+        highThreshold = cfg->thresholdHigh;
+    }
+    
+    // Clear only the temperature area (center of screen)
+    // Area: roughly y=50 to y=90, full width for temperature
+    tft.fillRect(40, 45, DISPLAY_WIDTH - 80, 50, COLOR_BG);
+    
+    // Redraw temperature
+    tft.setTextDatum(MC_DATUM);
+    
+    if (!sensor->connected) {
+        tft.setTextColor(COLOR_TEMP_ALERT, COLOR_BG);
+        tft.drawString("ERROR", DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 + 5, 4);
+    } else {
+        uint16_t tempColor = getTemperatureColor(currentTemp, lowThreshold, highThreshold);
+        tft.setTextColor(tempColor, COLOR_BG);
+        
+        char tempStr[16];
+        snprintf(tempStr, sizeof(tempStr), "%.1f", currentTemp);
+        tft.drawString(tempStr, DISPLAY_WIDTH/2, DISPLAY_HEIGHT/2 + 5, 4);
+        
+        tft.setTextDatum(ML_DATUM);
+        tft.drawString("C", DISPLAY_WIDTH/2 + 55, DISPLAY_HEIGHT/2 + 5, 4);
+    }
+    
+    // Update cached temperature
+    if (focusSensorIndex < MAX_SENSORS) {
+        lastDisplayedTemp[focusSensorIndex] = currentTemp;
+    }
+#endif
+}
+
+void DisplayManager::updateSensorsPagePartial() {
+#ifdef USE_DISPLAY
+    if (sensorManager == nullptr || sensorManager->getSensorCount() == 0) return;
+    
+    uint8_t count = sensorManager->getSensorCount();
+    int16_t contentY = 24;
+    int16_t rowHeight = 45;
+    
+    for (uint8_t i = 0; i < SENSORS_PER_PAGE && (sensorPageOffset + i) < count; i++) {
+        uint8_t sensorIdx = sensorPageOffset + i;
+        const SensorData* sensor = sensorManager->getSensorData(sensorIdx);
+        if (sensor == nullptr) continue;
+        
+        float currentTemp = sensor->temperature;
+        float lastTemp = (sensorIdx < MAX_SENSORS) ? lastDisplayedTemp[sensorIdx] : -999.0f;
+        
+        // Skip if temperature hasn't changed significantly
+        if (fabsf(currentTemp - lastTemp) < 0.05f) {
+            continue;
+        }
+        
+        // Get thresholds
+        float lowThreshold = DEFAULT_THRESHOLD_LOW;
+        float highThreshold = DEFAULT_THRESHOLD_HIGH;
+        const SensorConfig* cfg = configManager.getSensorConfigByAddress(sensor->addressStr);
+        if (cfg != nullptr) {
+            lowThreshold = cfg->thresholdLow;
+            highThreshold = cfg->thresholdHigh;
+        }
+        
+        // Clear only the temperature value area for this row
+        int16_t y = contentY + (i * rowHeight);
+        tft.fillRect(DISPLAY_WIDTH - 80, y + 5, 75, 35, COLOR_BG);
+        
+        // Redraw temperature
+        tft.setTextDatum(MR_DATUM);
+        if (!sensor->connected) {
+            tft.setTextColor(COLOR_TEMP_ALERT, COLOR_BG);
+            tft.drawString("ERR", DISPLAY_WIDTH - 10, y + 22, 4);
+        } else {
+            uint16_t tempColor = getTemperatureColor(currentTemp, lowThreshold, highThreshold);
+            tft.setTextColor(tempColor, COLOR_BG);
+            
+            char tempStr[16];
+            snprintf(tempStr, sizeof(tempStr), "%.1f", currentTemp);
+            tft.drawString(tempStr, DISPLAY_WIDTH - 10, y + 22, 4);
+        }
+        
+        // Update cached temperature
+        if (sensorIdx < MAX_SENSORS) {
+            lastDisplayedTemp[sensorIdx] = currentTemp;
+        }
+    }
+#endif
 }

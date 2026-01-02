@@ -8,9 +8,11 @@
 #include "ota_manager.h"
 
 #include <HTTPClient.h>
+#include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <Update.h>
 #include <ArduinoJson.h>
+#include <new>
 #include <cstring>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
@@ -24,6 +26,24 @@
 OTAManager otaManager;
 
 namespace {
+
+struct OtaCheckTaskArgs {
+    OTAManager* self;
+    bool force;
+};
+
+bool isTransientConnectivityError(String err) {
+    err.toLowerCase();
+    // Typical Arduino HTTPClient/WiFi stack transient errors.
+    return err.indexOf("connection refused") >= 0 ||
+           err.indexOf("connection lost") >= 0 ||
+           err.indexOf("no http server") >= 0 ||
+           err.indexOf("host unreachable") >= 0 ||
+           err.indexOf("not connected") >= 0 ||
+           err.indexOf("connect") >= 0 ||
+           err.indexOf("dns") >= 0 ||
+           err.indexOf("timeout") >= 0;
+}
 constexpr uint32_t RELEASE_INFO_TTL_MS = 5UL * 60UL * 1000UL; // 5 min
 constexpr uint32_t AUTO_CHECK_INTERVAL_MS = 24UL * 60UL * 60UL * 1000UL; // 24 hours
 constexpr uint32_t HTTP_TIMEOUT_MS = 15000;
@@ -99,6 +119,40 @@ UrlDetails parseUrl(const String& url) {
     return details;
 }
 
+bool internetReachableForUrl(const String& url, String& error) {
+    UrlDetails details = parseUrl(url);
+
+    IPAddress ip;
+    if (!WiFi.hostByName(details.host.c_str(), ip)) {
+        error = "Precheck: DNS failed";
+        return false;
+    }
+
+    // Prefer a quick TLS connect probe for HTTPS URLs: this tends to fail fast on captive portals.
+    if (details.port == 443) {
+        WiFiClientSecure probe;
+        probe.setInsecure();
+        probe.setTimeout(2); // seconds
+        if (!probe.connect(details.host.c_str(), details.port)) {
+            error = "Precheck: connect failed";
+            probe.stop();
+            return false;
+        }
+        probe.stop();
+        return true;
+    }
+
+    WiFiClient probe;
+    probe.setTimeout(1500);
+    if (!probe.connect(ip, details.port)) {
+        error = "Precheck: connect failed";
+        probe.stop();
+        return false;
+    }
+    probe.stop();
+    return true;
+}
+
 // Resolve GitHub redirects using raw socket connection (memory efficient)
 // This follows the ESP_OTA_GitHub approach but with heap allocation
 bool resolveRedirects(const String& startUrl, String& finalUrl, String& error) {
@@ -106,10 +160,6 @@ bool resolveRedirects(const String& startUrl, String& finalUrl, String& error) {
     
     for (int redirectCount = 0; redirectCount < 10; redirectCount++) {
         UrlDetails url = parseUrl(finalUrl);
-        
-        Serial.printf("[OTA] Redirect %d: %s%s%s\n", redirectCount + 1, 
-            url.proto.c_str(), url.host.c_str(), url.path.c_str());
-        Serial.printf("[OTA] Free heap before connect: %u\n", ESP.getFreeHeap());
         
         // Allocate on heap to avoid stack overflow
         WiFiClientSecure* client = new WiFiClientSecure();
@@ -121,15 +171,11 @@ bool resolveRedirects(const String& startUrl, String& finalUrl, String& error) {
         client->setInsecure(); // Skip certificate validation to save memory
         client->setTimeout(30); // 30 second timeout
         
-        Serial.printf("[OTA] Connecting to %s:%d...\n", url.host.c_str(), url.port);
-        
         if (!client->connect(url.host.c_str(), url.port)) {
             error = "Connection to " + url.host + " failed";
             delete client;
             return false;
         }
-        
-        Serial.println("[OTA] Connected, sending request...");
         
         // Send minimal HTTP request
         client->print(String("GET ") + url.path + " HTTP/1.1\r\n" +
@@ -152,7 +198,6 @@ bool resolveRedirects(const String& startUrl, String& finalUrl, String& error) {
                 int spacePos = line.indexOf(' ');
                 if (spacePos > 0) {
                     httpCode = line.substring(spacePos + 1, spacePos + 4).toInt();
-                    Serial.printf("[OTA] HTTP status: %d\n", httpCode);
                 }
             }
             
@@ -161,7 +206,6 @@ bool resolveRedirects(const String& startUrl, String& finalUrl, String& error) {
                 newLocation = line.substring(10);
                 newLocation.trim();
                 foundLocation = true;
-                Serial.printf("[OTA] Found Location: %s\n", newLocation.c_str());
             }
             
             // Empty line means end of headers
@@ -182,11 +226,8 @@ bool resolveRedirects(const String& startUrl, String& finalUrl, String& error) {
         delete client;
         client = nullptr;
         
-        Serial.printf("[OTA] Free heap after disconnect: %u\n", ESP.getFreeHeap());
-        
         // Check if we got a success code (final URL)
         if (httpCode == 200 || httpCode == 206) {
-            Serial.printf("[OTA] Final URL reached (HTTP %d)\n", httpCode);
             return true;
         }
         
@@ -199,7 +240,6 @@ bool resolveRedirects(const String& startUrl, String& finalUrl, String& error) {
                 // Relative URL - same host
                 finalUrl = url.proto + url.host + newLocation;
             }
-            Serial.printf("[OTA] Redirecting to: %s\n", finalUrl.c_str());
             delay(500); // Delay between redirects to allow memory cleanup
             continue;
         }
@@ -236,13 +276,22 @@ String githubApiLatestReleaseUrl() {
 // ============================================================================
 
 bool httpGetToString(const String& url, String& out, String& error, size_t maxBytes) {
+    // NOTE: Pre-check disabled - it was causing intermittent "connection refused" errors
+    // because opening two TLS connections in quick succession can trigger router 
+    // connection tracking issues or leave sockets in TIME_WAIT state.
+    // The retry loop below handles transient failures adequately.
+    
+    // String preErr;
+    // if (!internetReachableForUrl(url, preErr)) {
+    //     error = preErr;
+    //     return false;
+    // }
+
     uint8_t retries = 0;
     uint32_t retryDelay = HTTP_RETRY_DELAY_MS;
     
     while (retries <= HTTP_MAX_RETRIES) {
         if (retries > 0) {
-            Serial.printf("[OTA] Retry %d/%d after %dms delay...\n", 
-                retries, HTTP_MAX_RETRIES, retryDelay);
             delay(retryDelay);
             retryDelay *= 2; // Exponential backoff
         }
@@ -262,6 +311,7 @@ bool httpGetToString(const String& url, String& out, String& error, size_t maxBy
         }
 
         http.addHeader("User-Agent", "probe-station-esp32");
+        
         int code = http.GET();
         
         if (code <= 0) {
@@ -276,7 +326,8 @@ bool httpGetToString(const String& url, String& out, String& error, size_t maxBy
                 continue;
             }
             
-            // Other errors (timeout, etc.) - don't retry
+            // Other errors - don't retry
+            Serial.printf("[OTA] Check failed: %s\n", error.c_str());
             return false;
         }
         
@@ -505,9 +556,21 @@ bool OTAManager::ensureReleaseInfoFresh(bool force, String& error) {
     }
 
     setProgress(OTAState::CHECKING, 0, "Checking GitHub releases...");
+
+    // Pass whether this check was explicitly forced (user-initiated) so we can
+    // avoid surfacing transient connectivity errors from background checks.
+    OtaCheckTaskArgs* args = new (std::nothrow) OtaCheckTaskArgs{this, force};
+    if (!args) {
+        _checkTask = nullptr;
+        error = "Out of memory starting OTA check";
+        setProgress(OTAState::ERROR, 0, "OTA: failed to check releases", error.c_str());
+        return false;
+    }
+
     // 8KB stack is sufficient now that we removed body/readme fetching
-    BaseType_t ok = xTaskCreatePinnedToCore(checkThunk, "ota_check", 8192, this, 1, &_checkTask, 0);
+    BaseType_t ok = xTaskCreatePinnedToCore(checkThunk, "ota_check", 8192, args, 1, &_checkTask, 0);
     if (ok != pdPASS) {
+        delete args;
         _checkTask = nullptr;
         error = "Failed to start OTA check task";
         setProgress(OTAState::ERROR, 0, "OTA: failed to check releases", error.c_str());
@@ -517,13 +580,17 @@ bool OTAManager::ensureReleaseInfoFresh(bool force, String& error) {
 }
 
 void OTAManager::checkThunk(void* arg) {
-    OTAManager* self = reinterpret_cast<OTAManager*>(arg);
-    self->runCheckTask(false);
+    OtaCheckTaskArgs* args = reinterpret_cast<OtaCheckTaskArgs*>(arg);
+    OTAManager* self = args ? args->self : nullptr;
+    const bool force = args ? args->force : false;
+    delete args;
+    if (self) {
+        self->runCheckTask(force);
+    }
     vTaskDelete(nullptr);
 }
 
 void OTAManager::runCheckTask(bool force) {
-    (void)force;
     String err;
     OTAReleaseInfo next;
 
@@ -531,7 +598,15 @@ void OTAManager::runCheckTask(bool force) {
 
     if (!fetchLatestReleaseFromGitHub(next, err)) {
         Serial.printf("[OTA] GitHub fetch failed: %s\n", err.c_str());
-        setProgress(OTAState::ERROR, 0, "Failed to fetch release", err.c_str());
+
+        // Background checks should not spam the UI with transient connectivity errors.
+        // Only show these errors when the user explicitly forces a check.
+        if (!force && isTransientConnectivityError(err)) {
+            setProgress(OTAState::READY, 0, "Update check postponed");
+        } else {
+            setProgress(OTAState::ERROR, 0, "Failed to fetch release", err.c_str());
+        }
+
         _checkTask = nullptr;
         return;
     }
@@ -598,8 +673,7 @@ bool OTAManager::fetchLatestReleaseFromGitHub(OTAReleaseInfo& into, String& erro
 }
 
 bool OTAManager::downloadAndApply(const String& url, int updateCommand, const char* label, String& error) {
-    Serial.printf("[OTA] %s: Starting download from %s\n", label, url.c_str());
-    Serial.printf("[OTA] %s: Free heap: %u bytes\n", label, ESP.getFreeHeap());
+    Serial.printf("[OTA] %s: Starting download...\n", label);
     
     // For SPIFFS, use dedicated function
     if (updateCommand == U_SPIFFS) {
@@ -616,8 +690,6 @@ bool OTAManager::downloadAndApply(const String& url, int updateCommand, const ch
         error = String(label) + ": No OTA partition found";
         return false;
     }
-    Serial.printf("[OTA] %s: Target partition: %s (size: %u)\n", 
-        label, update_partition->label, update_partition->size);
     
     // Allocate SSL client on heap
     WiFiClientSecure* client = new WiFiClientSecure();
@@ -631,16 +703,11 @@ bool OTAManager::downloadAndApply(const String& url, int updateCommand, const ch
     client->setTimeout(60); // 60 second timeout
     client->setHandshakeTimeout(30); // 30 second handshake timeout
     
-    Serial.printf("[OTA] %s: Free heap after SSL client setup: %u\n", label, ESP.getFreeHeap());
-    
     // Use HTTPClient for redirect handling
     HTTPClient http;
     http.setTimeout(60000);
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     http.setReuse(false);
-    
-    Serial.printf("[OTA] %s: Connecting...\n", label);
-    Serial.printf("[OTA] %s: Free heap before connect: %u\n", label, ESP.getFreeHeap());
     
     if (!http.begin(*client, url)) {
         error = String(label) + ": HTTP begin failed";
@@ -651,7 +718,7 @@ bool OTAManager::downloadAndApply(const String& url, int updateCommand, const ch
     http.addHeader("User-Agent", "probe-station-esp32");
     http.addHeader("Accept", "application/octet-stream");
     
-    Serial.printf("[OTA] %s: Sending GET request...\n", label);
+    Serial.printf("[OTA] %s: Sending request...\n", label);
     
     // Reset watchdog before potentially long SSL handshake
     esp_task_wdt_reset();
@@ -660,8 +727,6 @@ bool OTAManager::downloadAndApply(const String& url, int updateCommand, const ch
     
     // Reset watchdog after connection
     esp_task_wdt_reset();
-    
-    Serial.printf("[OTA] %s: HTTP response: %d, free heap: %u\n", label, httpCode, ESP.getFreeHeap());
     
     if (httpCode != HTTP_CODE_OK) {
         if (httpCode <= 0) {
@@ -705,8 +770,6 @@ bool OTAManager::downloadAndApply(const String& url, int updateCommand, const ch
         delete client;
         return false;
     }
-    
-    Serial.printf("[OTA] %s: OTA started, streaming to flash...\n", label);
     
     // Stream directly to flash in small chunks
     constexpr size_t CHUNK_SIZE = 1024;  // Small chunks to minimize RAM
@@ -755,9 +818,8 @@ bool OTAManager::downloadAndApply(const String& url, int updateCommand, const ch
         if (progress != lastProgress) {
             lastProgress = progress;
             setProgress(progressState, progress, "Downloading firmware...");
-            if (progress % 10 == 0) {
-                Serial.printf("[OTA] %s: %d%% (%u/%d bytes), heap: %u\n", 
-                    label, progress, totalWritten, contentLength, ESP.getFreeHeap());
+            if (progress % 25 == 0) {
+                Serial.printf("[OTA] %s: %d%%\n", label, progress);
             }
             esp_task_wdt_reset();  // Feed watchdog on progress updates
         }
@@ -770,7 +832,7 @@ bool OTAManager::downloadAndApply(const String& url, int updateCommand, const ch
     delete client;
     client = nullptr;
     
-    Serial.printf("[OTA] %s: Download complete, finalizing...\n", label);
+    Serial.printf("[OTA] %s: Finalizing...\n", label);
     
     // Finish OTA
     err = esp_ota_end(ota_handle);
@@ -792,7 +854,7 @@ bool OTAManager::downloadAndApply(const String& url, int updateCommand, const ch
     
     // Reboot immediately after setting boot partition
     // The old code in memory may become invalid, so reboot now before any issues
-    Serial.printf("[OTA] %s: Firmware update successful! %u bytes written. Rebooting...\n", label, totalWritten);
+    Serial.printf("[OTA] %s: Success! Rebooting...\n", label);
     Serial.flush();
     delay(100);
     ESP.restart();
@@ -803,8 +865,7 @@ bool OTAManager::downloadAndApply(const String& url, int updateCommand, const ch
 
 // SPIFFS update using Arduino Update library (esp_https_ota doesn't support SPIFFS)
 bool OTAManager::downloadAndApplySPIFFS(const String& url, const char* label, String& error) {
-    Serial.printf("[OTA] %s: Starting SPIFFS download from %s\n", label, url.c_str());
-    Serial.printf("[OTA] %s: Free heap: %u bytes\n", label, ESP.getFreeHeap());
+    Serial.printf("[OTA] %s: Starting SPIFFS download...\n", label);
     
     OTAState progressState = OTAState::UPDATING_SPIFFS;
     
@@ -818,14 +879,10 @@ bool OTAManager::downloadAndApplySPIFFS(const String& url, const char* label, St
     client->setTimeout(60);
     client->setHandshakeTimeout(30);
     
-    Serial.printf("[OTA] %s: Free heap after SSL client setup: %u\n", label, ESP.getFreeHeap());
-    
     HTTPClient http;
     http.setTimeout(60000);
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     http.setReuse(false);
-    
-    Serial.printf("[OTA] %s: Connecting...\n", label);
     
     if (!http.begin(*client, url)) {
         error = String(label) + ": HTTP begin failed";
@@ -835,8 +892,6 @@ bool OTAManager::downloadAndApplySPIFFS(const String& url, const char* label, St
     
     http.addHeader("User-Agent", "probe-station-esp32");
     
-    Serial.printf("[OTA] %s: Sending GET request...\n", label);
-    
     // Reset watchdog before potentially long SSL handshake
     esp_task_wdt_reset();
     
@@ -844,8 +899,6 @@ bool OTAManager::downloadAndApplySPIFFS(const String& url, const char* label, St
     
     // Reset watchdog after connection
     esp_task_wdt_reset();
-    
-    Serial.printf("[OTA] %s: HTTP response: %d\n", label, httpCode);
     
     if (httpCode != HTTP_CODE_OK) {
         if (httpCode <= 0) {
@@ -928,9 +981,8 @@ bool OTAManager::downloadAndApplySPIFFS(const String& url, const char* label, St
         if (progress != lastProgress) {
             lastProgress = progress;
             setProgress(progressState, progress, "Downloading SPIFFS...");
-            if (progress % 10 == 0) {
-                Serial.printf("[OTA] %s: %d%% (%u/%d bytes)\n", 
-                    label, progress, written, contentLength);
+            if (progress % 25 == 0) {
+                Serial.printf("[OTA] %s: %d%%\n", label, progress);
             }
             esp_task_wdt_reset();  // Feed watchdog
         }
