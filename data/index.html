@@ -90,9 +90,18 @@
             <div class="section">
                 <div class="section-header">
                     <h2>Temperature History</h2>
-                    <select id="chartSensor" class="chart-sensor-select">
-                        <option value="">All Sensors</option>
-                    </select>
+                    <div class="chart-controls">
+                        <div class="time-range-buttons">
+                            <button class="time-range-btn active" data-hours="6">6h</button>
+                            <button class="time-range-btn" data-hours="12">12h</button>
+                            <button class="time-range-btn" data-hours="24">24h</button>
+                            <button class="time-range-btn" data-hours="36">36h</button>
+                            <button class="time-range-btn" data-hours="48">48h</button>
+                        </div>
+                        <select id="chartSensor" class="chart-sensor-select">
+                            <option value="">All Sensors</option>
+                        </select>
+                    </div>
                 </div>
                 <div class="chart-container">
                     <svg id="tempChart" width="100%" height="300" viewBox="0 0 800 300">

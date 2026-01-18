@@ -71,6 +71,7 @@ let chartData = {}; // {address: [{time, temp}, ...]}
 let chartSelectedSensor = ''; // Empty = all sensors
 let chartDataLoaded = false; // Track if initial history was loaded from API
 let lastChartRedraw = 0; // Track last redraw time
+let chartTimeRange = 6 * 60 * 60 * 1000; // Default 6 hours in milliseconds
 
 // ============================================================================
 // Initialization
@@ -1625,6 +1626,21 @@ function initChart() {
         drawChart();
     });
     
+    // Time range buttons
+    const timeRangeButtons = document.querySelectorAll('.time-range-btn');
+    timeRangeButtons.forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const hours = parseInt(e.target.dataset.hours);
+            chartTimeRange = hours * 60 * 60 * 1000;
+            
+            // Update active button
+            timeRangeButtons.forEach(b => b.classList.remove('active'));
+            e.target.classList.add('active');
+            
+            drawChart();
+        });
+    });
+    
     // Redraw chart on window resize/orientation change (debounced)
     let resizeTimer;
     const handleResize = () => {
@@ -1711,7 +1727,7 @@ function updateChartData() {
     if (sensors.length === 0) return;
     
     const now = Date.now();
-    const maxAge = 150 * 60 * 1000; // Keep 150 minutes (matches ESP32 history: 30 points × 5min max)
+    const maxAge = 48 * 60 * 60 * 1000; // Keep 48 hours of data in browser
     const minInterval = 60 * 1000; // Minimum 1 minute between points
     const minTempChange = 0.1; // Minimum 0.1°C change to store
     
@@ -1825,31 +1841,39 @@ function drawChart() {
     // Clear
     svg.innerHTML = '';
     
-    // Get data to display
+    // Get data to display - filter by time range
+    const now = Date.now();
+    const cutoffTime = now - chartTimeRange;
     let dataToPlot = [];
     let commonStartTime = 0;
     
     if (chartSelectedSensor) {
-        // Single sensor: show all its data
+        // Single sensor: show data within time range
         const data = chartData[chartSelectedSensor];
         if (data && data.length > 0) {
-            const sensor = sensors.find(s => s.address === chartSelectedSensor);
-            const color = '#3b82f6';
-            dataToPlot.push({ sensor, data, color });
+            const filteredData = data.filter(point => point.time >= cutoffTime);
+            if (filteredData.length > 0) {
+                const sensor = sensors.find(s => s.address === chartSelectedSensor);
+                const color = '#3b82f6';
+                dataToPlot.push({ sensor, data: filteredData, color });
+            }
         }
     } else {
-        // All sensors: find common time range (latest start time)
+        // All sensors: filter by time range and find common time range (latest start time)
         const colors = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
         let colorIndex = 0;
         
-        // Plot all data that exists in chartData, even if sensors array is empty
+        // Plot all data that exists in chartData within time range
         Object.keys(chartData).forEach(address => {
             const data = chartData[address];
             if (data && data.length > 0) {
-                const sensor = sensors.find(s => s.address === address) || { address, name: 'Sensor' };
-                const sensorStartTime = data[0].time;
-                if (sensorStartTime > commonStartTime) {
-                    commonStartTime = sensorStartTime;
+                const timeFilteredData = data.filter(point => point.time >= cutoffTime);
+                if (timeFilteredData.length > 0) {
+                    const sensor = sensors.find(s => s.address === address) || { address, name: 'Sensor' };
+                    const sensorStartTime = timeFilteredData[0].time;
+                    if (sensorStartTime > commonStartTime) {
+                        commonStartTime = sensorStartTime;
+                    }
                 }
             }
         });
@@ -1858,7 +1882,8 @@ function drawChart() {
         Object.keys(chartData).forEach(address => {
             const data = chartData[address];
             if (data && data.length > 0) {
-                const filteredData = data.filter(point => point.time >= commonStartTime);
+                const timeFilteredData = data.filter(point => point.time >= cutoffTime);
+                const filteredData = timeFilteredData.filter(point => point.time >= commonStartTime);
                 if (filteredData.length > 0) {
                     const sensor = sensors.find(s => s.address === address) || { address, name: 'Sensor' };
                     dataToPlot.push({ 
@@ -1952,8 +1977,20 @@ function drawChart() {
     }
     
     // Draw lines
+    // Track min/max for markers
+    const minMaxPoints = [];
+    
     dataToPlot.forEach(({ sensor, data, color }) => {
         if (data.length === 0) return;
+        
+        // Find min and max points
+        let minPoint = data[0];
+        let maxPoint = data[0];
+        data.forEach(point => {
+            if (point.temp < minPoint.temp) minPoint = point;
+            if (point.temp > maxPoint.temp) maxPoint = point;
+        });
+        minMaxPoints.push({ sensor, minPoint, maxPoint, color });
         
         // Draw a dot if only one point
         if (data.length === 1) {
@@ -1981,6 +2018,72 @@ function drawChart() {
         path.setAttribute('stroke', color);
         path.setAttribute('stroke-width', '2');
         svg.appendChild(path);
+        
+        // Current value indicator - dot at the latest point
+        const latestPoint = data[data.length - 1];
+        const latestX = xScale(latestPoint.time);
+        const latestY = yScale(latestPoint.temp);
+        
+        const currentDot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        currentDot.setAttribute('cx', latestX);
+        currentDot.setAttribute('cy', latestY);
+        currentDot.setAttribute('r', '5');
+        currentDot.setAttribute('fill', color);
+        currentDot.setAttribute('stroke', '#0f172a');
+        currentDot.setAttribute('stroke-width', '2');
+        svg.appendChild(currentDot);
+    });
+    
+    // Draw min/max markers
+    minMaxPoints.forEach(({ sensor, minPoint, maxPoint, color }) => {
+        // Skip if min and max are the same point
+        if (minPoint === maxPoint) return;
+        
+        // Min marker (❄️)
+        const minX = xScale(minPoint.time);
+        const minY = yScale(minPoint.temp);
+        
+        const minCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        minCircle.setAttribute('cx', minX);
+        minCircle.setAttribute('cy', minY);
+        minCircle.setAttribute('r', '6');
+        minCircle.setAttribute('fill', '#60a5fa');
+        minCircle.setAttribute('stroke', '#0f172a');
+        minCircle.setAttribute('stroke-width', '1.5');
+        svg.appendChild(minCircle);
+        
+        const minLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        minLabel.setAttribute('x', minX);
+        minLabel.setAttribute('y', minY - 12);
+        minLabel.setAttribute('text-anchor', 'middle');
+        minLabel.setAttribute('fill', '#60a5fa');
+        minLabel.setAttribute('font-size', '11');
+        minLabel.setAttribute('font-weight', 'bold');
+        minLabel.textContent = minPoint.temp.toFixed(1) + '°';
+        svg.appendChild(minLabel);
+        
+        // Max marker (🔥)
+        const maxX = xScale(maxPoint.time);
+        const maxY = yScale(maxPoint.temp);
+        
+        const maxCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        maxCircle.setAttribute('cx', maxX);
+        maxCircle.setAttribute('cy', maxY);
+        maxCircle.setAttribute('r', '6');
+        maxCircle.setAttribute('fill', '#f87171');
+        maxCircle.setAttribute('stroke', '#0f172a');
+        maxCircle.setAttribute('stroke-width', '1.5');
+        svg.appendChild(maxCircle);
+        
+        const maxLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        maxLabel.setAttribute('x', maxX);
+        maxLabel.setAttribute('y', maxY - 12);
+        maxLabel.setAttribute('text-anchor', 'middle');
+        maxLabel.setAttribute('fill', '#f87171');
+        maxLabel.setAttribute('font-size', '11');
+        maxLabel.setAttribute('font-weight', 'bold');
+        maxLabel.textContent = maxPoint.temp.toFixed(1) + '°';
+        svg.appendChild(maxLabel);
     });
     
     // Legend - positioned below chart with dynamic spacing
@@ -2013,13 +2116,34 @@ function drawChart() {
         });
     }
     
-    // Time labels - positioned below chart, above legend, every 5 minutes
-    const fiveMinutes = 5 * 60 * 1000; // 5 minutes in milliseconds
-    const minTimeRounded = Math.floor(minTime / fiveMinutes) * fiveMinutes;
-    const maxTimeRounded = Math.ceil(maxTime / fiveMinutes) * fiveMinutes;
+    // Time labels - positioned below chart, above legend
+    // Calculate appropriate time interval based on time range to avoid overlapping
+    const timeRangeMs = maxTime - minTime;
+    const targetLabelCount = isMobile ? 6 : 10; // Fewer labels on mobile
+    let timeInterval;
     
-    // Draw vertical grid lines and labels every 5 minutes
-    for (let time = minTimeRounded; time <= maxTimeRounded; time += fiveMinutes) {
+    // Determine appropriate interval based on time range
+    if (timeRangeMs <= 60 * 60 * 1000) { // <= 1 hour: 5 min intervals
+        timeInterval = 5 * 60 * 1000;
+    } else if (timeRangeMs <= 3 * 60 * 60 * 1000) { // <= 3 hours: 15 min intervals
+        timeInterval = 15 * 60 * 1000;
+    } else if (timeRangeMs <= 6 * 60 * 60 * 1000) { // <= 6 hours: 30 min intervals
+        timeInterval = 30 * 60 * 1000;
+    } else if (timeRangeMs <= 12 * 60 * 60 * 1000) { // <= 12 hours: 1 hour intervals
+        timeInterval = 60 * 60 * 1000;
+    } else if (timeRangeMs <= 24 * 60 * 60 * 1000) { // <= 24 hours: 2 hour intervals
+        timeInterval = 2 * 60 * 60 * 1000;
+    } else if (timeRangeMs <= 36 * 60 * 60 * 1000) { // <= 36 hours: 3 hour intervals
+        timeInterval = 3 * 60 * 60 * 1000;
+    } else { // > 36 hours: 4 hour intervals
+        timeInterval = 4 * 60 * 60 * 1000;
+    }
+    
+    const minTimeRounded = Math.floor(minTime / timeInterval) * timeInterval;
+    const maxTimeRounded = Math.ceil(maxTime / timeInterval) * timeInterval;
+    
+    // Draw vertical grid lines and labels
+    for (let time = minTimeRounded; time <= maxTimeRounded; time += timeInterval) {
         // Only draw if within visible range
         if (time < minTime || time > maxTime) continue;
         
@@ -2036,9 +2160,16 @@ function drawChart() {
         gridLine.setAttribute('stroke-dasharray', '2,2'); // Dashed line for time
         svg.appendChild(gridLine);
         
-        // Time label
+        // Time label - format based on interval
         const date = new Date(time);
-        const timeStr = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+        let timeStr;
+        if (timeInterval >= 60 * 60 * 1000) {
+            // For hour intervals, show hour only
+            timeStr = date.toLocaleTimeString('en-US', { hour: '2-digit', hour12: false }) + ':00';
+        } else {
+            // For minute intervals, show hour:minute
+            timeStr = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+        }
         
         const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
         label.setAttribute('x', x);
@@ -2048,7 +2179,216 @@ function drawChart() {
         label.setAttribute('font-size', '12');
         label.textContent = timeStr;
         svg.appendChild(label);
+        
+        // Add date label for multi-day views (24h+)
+        if (timeRangeMs >= 24 * 60 * 60 * 1000) {
+            const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            const dateLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            dateLabel.setAttribute('x', x);
+            dateLabel.setAttribute('y', padding.top + chartHeight + 32);
+            dateLabel.setAttribute('text-anchor', 'middle');
+            dateLabel.setAttribute('fill', '#64748b');
+            dateLabel.setAttribute('font-size', '10');
+            dateLabel.textContent = dateStr;
+            svg.appendChild(dateLabel);
+        }
     }
+    
+    // Setup interactive tooltip
+    setupChartTooltip(svg, dataToPlot, xScale, yScale, padding, chartWidth, chartHeight, width, height);
+}
+
+// ============================================================================
+// Chart Tooltip
+// ============================================================================
+
+function setupChartTooltip(svg, dataToPlot, xScale, yScale, padding, chartWidth, chartHeight, width, height) {
+    if (dataToPlot.length === 0) return;
+    
+    // Create tooltip group (will be shown/hidden)
+    const tooltipGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    tooltipGroup.setAttribute('id', 'chartTooltip');
+    tooltipGroup.style.display = 'none';
+    tooltipGroup.style.pointerEvents = 'none';
+    
+    // Crosshair vertical line
+    const crosshair = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    crosshair.setAttribute('stroke', '#64748b');
+    crosshair.setAttribute('stroke-width', '1');
+    crosshair.setAttribute('stroke-dasharray', '3,3');
+    tooltipGroup.appendChild(crosshair);
+    
+    // Tooltip background
+    const tooltipBg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    tooltipBg.setAttribute('fill', '#1e293b');
+    tooltipBg.setAttribute('stroke', '#334155');
+    tooltipBg.setAttribute('stroke-width', '1');
+    tooltipBg.setAttribute('rx', '4');
+    tooltipGroup.appendChild(tooltipBg);
+    
+    // Tooltip text container
+    const tooltipText = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    tooltipGroup.appendChild(tooltipText);
+    
+    svg.appendChild(tooltipGroup);
+    
+    // Create invisible overlay for mouse/touch events
+    const overlay = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    overlay.setAttribute('x', padding.left);
+    overlay.setAttribute('y', padding.top);
+    overlay.setAttribute('width', chartWidth);
+    overlay.setAttribute('height', chartHeight);
+    overlay.setAttribute('fill', 'transparent');
+    overlay.style.cursor = 'crosshair';
+    svg.appendChild(overlay);
+    
+    // Reverse scale functions
+    const xScaleInverse = (screenX) => {
+        const minTime = dataToPlot[0].data[0].time;
+        const maxTime = dataToPlot[0].data[dataToPlot[0].data.length - 1].time;
+        // Find actual min/max from all data
+        dataToPlot.forEach(({ data }) => {
+            if (data[0].time < minTime) minTime = data[0].time;
+            if (data[data.length - 1].time > maxTime) maxTime = data[data.length - 1].time;
+        });
+        const timeRange = maxTime - minTime || 1;
+        return minTime + ((screenX - padding.left) / chartWidth) * timeRange;
+    };
+    
+    const showTooltip = (event) => {
+        const rect = svg.getBoundingClientRect();
+        const scaleX = width / rect.width;
+        const scaleY = height / rect.height;
+        
+        let clientX, clientY;
+        if (event.type.startsWith('touch')) {
+            if (event.touches.length === 0) return;
+            clientX = event.touches[0].clientX;
+            clientY = event.touches[0].clientY;
+        } else {
+            clientX = event.clientX;
+            clientY = event.clientY;
+        }
+        
+        const mouseX = (clientX - rect.left) * scaleX;
+        const mouseY = (clientY - rect.top) * scaleY;
+        
+        // Check if mouse is within chart area
+        if (mouseX < padding.left || mouseX > padding.left + chartWidth ||
+            mouseY < padding.top || mouseY > padding.top + chartHeight) {
+            tooltipGroup.style.display = 'none';
+            return;
+        }
+        
+        // Get time at mouse position
+        const hoveredTime = xScaleInverse(mouseX);
+        
+        // Find closest data points for each sensor
+        const nearestPoints = [];
+        dataToPlot.forEach(({ sensor, data, color }) => {
+            let closest = null;
+            let minDiff = Infinity;
+            
+            data.forEach(point => {
+                const diff = Math.abs(point.time - hoveredTime);
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closest = point;
+                }
+            });
+            
+            if (closest) {
+                nearestPoints.push({ sensor, point: closest, color });
+            }
+        });
+        
+        if (nearestPoints.length === 0) {
+            tooltipGroup.style.display = 'none';
+            return;
+        }
+        
+        // Use the first point's time for crosshair
+        const displayTime = nearestPoints[0].point.time;
+        const crosshairX = xScale(displayTime);
+        
+        // Update crosshair
+        crosshair.setAttribute('x1', crosshairX);
+        crosshair.setAttribute('x2', crosshairX);
+        crosshair.setAttribute('y1', padding.top);
+        crosshair.setAttribute('y2', padding.top + chartHeight);
+        
+        // Build tooltip content
+        tooltipText.innerHTML = '';
+        
+        // Time label
+        const date = new Date(displayTime);
+        const timeStr = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+        const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        
+        const timeLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        timeLabel.setAttribute('x', 8);
+        timeLabel.setAttribute('y', 15);
+        timeLabel.setAttribute('fill', '#cbd5e1');
+        timeLabel.setAttribute('font-size', '11');
+        timeLabel.setAttribute('font-weight', 'bold');
+        timeLabel.textContent = `${dateStr} ${timeStr}`;
+        tooltipText.appendChild(timeLabel);
+        
+        // Sensor readings
+        let yOffset = 30;
+        nearestPoints.forEach(({ sensor, point, color }) => {
+            const sensorLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            sensorLabel.setAttribute('x', 8);
+            sensorLabel.setAttribute('y', yOffset);
+            sensorLabel.setAttribute('fill', color);
+            sensorLabel.setAttribute('font-size', '11');
+            sensorLabel.textContent = `${sensor.name || sensor.address}: ${point.temp.toFixed(1)}°C`;
+            tooltipText.appendChild(sensorLabel);
+            yOffset += 16;
+        });
+        
+        // Calculate tooltip dimensions
+        const tooltipWidth = 160;
+        const tooltipHeight = yOffset + 5;
+        
+        // Position tooltip (try right side first, then left if too close to edge)
+        let tooltipX = crosshairX + 10;
+        if (tooltipX + tooltipWidth > width - padding.right) {
+            tooltipX = crosshairX - tooltipWidth - 10;
+        }
+        
+        // Keep tooltip within vertical bounds
+        let tooltipY = mouseY - tooltipHeight / 2;
+        if (tooltipY < padding.top) tooltipY = padding.top;
+        if (tooltipY + tooltipHeight > padding.top + chartHeight) {
+            tooltipY = padding.top + chartHeight - tooltipHeight;
+        }
+        
+        // Update tooltip background
+        tooltipBg.setAttribute('x', tooltipX);
+        tooltipBg.setAttribute('y', tooltipY);
+        tooltipBg.setAttribute('width', tooltipWidth);
+        tooltipBg.setAttribute('height', tooltipHeight);
+        
+        // Update tooltip text position
+        tooltipText.setAttribute('transform', `translate(${tooltipX}, ${tooltipY})`);
+        
+        tooltipGroup.style.display = 'block';
+    };
+    
+    const hideTooltip = () => {
+        tooltipGroup.style.display = 'none';
+    };
+    
+    // Mouse events
+    overlay.addEventListener('mousemove', showTooltip);
+    overlay.addEventListener('mouseleave', hideTooltip);
+    
+    // Touch events
+    overlay.addEventListener('touchstart', showTooltip);
+    overlay.addEventListener('touchmove', showTooltip);
+    overlay.addEventListener('touchend', hideTooltip);
+    overlay.addEventListener('touchcancel', hideTooltip);
 }
 
 // ============================================================================
