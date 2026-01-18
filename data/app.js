@@ -1922,10 +1922,14 @@ function drawChart() {
     bg.setAttribute('stroke', '#334155');
     svg.appendChild(bg);
     
-    // Grid lines (horizontal)
-    const tempStep = Math.ceil((maxTemp - minTemp) / 5);
-    for (let i = 0; i <= 5; i++) {
-        const temp = minTemp + (maxTemp - minTemp) * (i / 5);
+    // Grid lines (horizontal) - drawn every 5 degrees
+    const tempRoundedMin = Math.floor(minTemp / 5) * 5;
+    const tempRoundedMax = Math.ceil(maxTemp / 5) * 5;
+    
+    for (let temp = tempRoundedMin; temp <= tempRoundedMax; temp += 5) {
+        // Only draw if within visible range
+        if (temp < minTemp || temp > maxTemp) continue;
+        
         const y = yScale(temp);
         
         const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
@@ -1943,7 +1947,7 @@ function drawChart() {
         label.setAttribute('text-anchor', 'end');
         label.setAttribute('fill', '#64748b');
         label.setAttribute('font-size', '12');
-        label.textContent = temp.toFixed(1) + '°';
+        label.textContent = temp.toFixed(0) + '°';
         svg.appendChild(label);
     }
     
@@ -2009,12 +2013,30 @@ function drawChart() {
         });
     }
     
-    // Time labels - positioned below chart, above legend
-    const now = new Date();
-    const labelCount = 4;
-    for (let i = 0; i <= labelCount; i++) {
-        const time = minTime + (timeRange * i / labelCount);
+    // Time labels - positioned below chart, above legend, every 5 minutes
+    const fiveMinutes = 5 * 60 * 1000; // 5 minutes in milliseconds
+    const minTimeRounded = Math.floor(minTime / fiveMinutes) * fiveMinutes;
+    const maxTimeRounded = Math.ceil(maxTime / fiveMinutes) * fiveMinutes;
+    
+    // Draw vertical grid lines and labels every 5 minutes
+    for (let time = minTimeRounded; time <= maxTimeRounded; time += fiveMinutes) {
+        // Only draw if within visible range
+        if (time < minTime || time > maxTime) continue;
+        
         const x = xScale(time);
+        
+        // Vertical grid line
+        const gridLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        gridLine.setAttribute('x1', x);
+        gridLine.setAttribute('y1', padding.top);
+        gridLine.setAttribute('x2', x);
+        gridLine.setAttribute('y2', padding.top + chartHeight);
+        gridLine.setAttribute('stroke', '#334155');
+        gridLine.setAttribute('stroke-width', '1');
+        gridLine.setAttribute('stroke-dasharray', '2,2'); // Dashed line for time
+        svg.appendChild(gridLine);
+        
+        // Time label
         const date = new Date(time);
         const timeStr = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
         
